@@ -1,0 +1,80 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id          String      @id @default(cuid())
+  name        String
+  description String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  testCases   TestCase[]
+  bugFixItems BugFix[]
+  modules     Module[]
+}
+
+model Module {
+  id          String      @id @default(cuid())
+  name        String
+  projectId   String
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  testCases   TestCase[]
+  bugFixItems BugFix[]
+}
+
+model TestCase {
+  id             String    @id @default(cuid())
+  testCaseId     String    // e.g. A-001, B-002
+  page           String    // e.g. CMS Login, Dashboard
+  subMenu        String?   // e.g. Order List, Product
+  weight         String?   // e.g. 16.60%, 6.25%
+  testType       String    // Positive / Negative
+  testAction     String    // Description of the test action
+  steps          String    // Test steps (multiline)
+  expectedResult String    // Expected result
+  actualResult   String?   // "As Expected" / "Not As Expected"
+  status         String    @default("NOT DONE") // DONE, NOT DONE, IN PROGRESS, BLOCKED, FAILED, READY TO RETEST, TBH
+  progress       Int       @default(0) // 0-100
+  remarks        String?   // Remarks / notes
+  priority       String    @default("Medium") // Low, Medium, High, Critical
+  projectId      String
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  moduleId       String?
+  module         Module?   @relation(fields: [moduleId], references: [id], onDelete: SetNull)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  bugFixItems    BugFix[]
+}
+
+model BugFix {
+  id               String    @id @default(cuid())
+  sourceTestCaseId String    // ID of original TestCase
+  testCaseId       String    // TC-ID of original test case
+  projectId        String
+  page             String
+  subMenu          String?
+  testType         String
+  testAction       String
+  steps            String
+  expectedResult   String
+  actualResult     String    // Always "Not As Expected" for bug fix items
+  priority         String
+  moduleId         String?
+  status           String    @default("SUDAH DILAPORKAN") // SUDAH DILAPORKAN, SEDANG DI FIX, READY TO RETEST
+  reportedAt       DateTime? // timestamp when reported
+  fixingAt         DateTime? // timestamp when developer starts fixing
+  readyAt          DateTime? // timestamp when ready to retest
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  module           Module?   @relation(fields: [moduleId], references: [id], onDelete: SetNull)
+  sourceTestCase   TestCase  @relation(fields: [sourceTestCaseId], references: [id], onDelete: Cascade)
+}
