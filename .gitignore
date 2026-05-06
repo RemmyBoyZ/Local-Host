@@ -55,5 +55,10 @@ db/*.db
 db/*.db-journal
 db/*.db-wal
 
+# Transient data
+mini-services/logs/
+mini-services/recordings/
+upload/
+
 # Skills directory
 /skills/

@@ -42,6 +42,7 @@ export async function PUT(req: NextRequest) {
       data: {
         ...(data.name !== undefined && { name: data.name }),
         ...(data.description !== undefined && { description: data.description }),
+        ...(data.automationContext !== undefined && { automationContext: data.automationContext }),
       },
     });
     return NextResponse.json(project);

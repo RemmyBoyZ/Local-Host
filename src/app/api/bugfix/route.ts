@@ -27,7 +27,29 @@ export async function GET(req: NextRequest) {
     const total = await db.bugFix.count({ where });
     const bugFixItems = await db.bugFix.findMany({
       where,
-      include: { module: true },
+      select: {
+        id: true,
+        sourceTestCaseId: true,
+        testCaseId: true,
+        projectId: true,
+        page: true,
+        subMenu: true,
+        testType: true,
+        testAction: true,
+        steps: true,
+        expectedResult: true,
+        actualResult: true,
+        priority: true,
+        moduleId: true,
+        status: true,
+        reportedAt: true,
+        fixingAt: true,
+        readyAt: true,
+        fixedAt: true,
+        createdAt: true,
+        updatedAt: true,
+        module: { select: { id: true, name: true } },
+      },
       orderBy: { [sortBy]: sortOrder },
       skip: (page - 1) * limit,
       take: limit,
@@ -53,6 +75,14 @@ export async function PUT(req: NextRequest) {
     // Update timestamps based on status change
     const updateData: Record<string, unknown> = {};
     if (data.status !== undefined) {
+      const allowedBugFixStatuses = ['SUDAH DILAPORKAN', 'SEDANG DI FIX', 'READY TO RETEST'];
+      if (!allowedBugFixStatuses.includes(data.status)) {
+        return NextResponse.json(
+          { error: 'Bug fix hanya bisa diproses sampai READY TO RETEST. Verified & Fixed dilakukan dari halaman Test Case setelah retest berhasil.' },
+          { status: 400 }
+        );
+      }
+
       updateData.status = data.status;
       const now = new Date();
 

@@ -13,20 +13,22 @@ export async function GET(req: NextRequest) {
       where: { projectId },
       select: {
         id: true,
+        testCaseId: true,
         page: true,
         subMenu: true,
         status: true,
         testType: true,
         priority: true,
+        updatedAt: true,
         moduleId: true,
         module: { select: { id: true, name: true } },
       },
     });
 
     const totalTestCases = allTestCases.length;
-    const tbhCount = allTestCases.filter(tc => tc.status === 'TBH').length;
-    // Active test cases = excluding TBH (To Be Honed - not yet confirmed for use)
-    const activeTestCases = allTestCases.filter(tc => tc.status !== 'TBH');
+    const tbaCount = allTestCases.filter(tc => tc.status === 'TBA').length;
+    // Active test cases = excluding TBA (To Be Announced - not yet confirmed for use)
+    const activeTestCases = allTestCases.filter(tc => tc.status !== 'TBA');
     const activeCount = activeTestCases.length;
     const doneCount = activeTestCases.filter(tc => tc.status === 'DONE').length;
     const notDoneCount = activeTestCases.filter(tc => tc.status === 'NOT DONE').length;
@@ -42,7 +44,7 @@ export async function GET(req: NextRequest) {
     const lowCount = allTestCases.filter(tc => tc.priority === 'Low').length;
 
     // ============ WEIGHT CALCULATION ============
-    // TBH test cases are excluded from weight and progress calculations
+    // TBA test cases are excluded from weight and progress calculations
     const menuGroups: Record<string, typeof allTestCases> = {};
     for (const tc of activeTestCases) {
       const menuKey = `${tc.page}|||${tc.subMenu || ''}`;
@@ -64,7 +66,7 @@ export async function GET(req: NextRequest) {
         case 'DONE': return 1;
         case 'IN PROGRESS': return 0.5;
         case 'READY TO RETEST': return 0.5;
-        case 'TBH': return 0; // TBH excluded from progress but handled separately
+        case 'TBA': return 0; // TBA excluded from progress but handled separately
         case 'BLOCKED': return 0;
         case 'NOT DONE': return 0;
         case 'FAILED': return 0;
@@ -87,7 +89,7 @@ export async function GET(req: NextRequest) {
       blockedCount: number;
       failedCount: number;
       readyToRetestCount: number;
-      tbhCount: number;
+      tbaCount: number;
       moduleId: string | null;
       moduleName: string | null;
     }[] = [];
@@ -102,7 +104,7 @@ export async function GET(req: NextRequest) {
       let menuBlocked = 0;
       let menuFailed = 0;
       let menuReadyRetest = 0;
-      let menuTbh = 0;
+      let menuTba = 0;
 
       for (const tc of cases) {
         const factor = getStatusFactor(tc.status);
@@ -112,7 +114,7 @@ export async function GET(req: NextRequest) {
         else if (tc.status === 'BLOCKED') menuBlocked++;
         else if (tc.status === 'FAILED') menuFailed++;
         else if (tc.status === 'READY TO RETEST') menuReadyRetest++;
-        else if (tc.status === 'TBH') menuTbh++;
+        else if (tc.status === 'TBA') menuTba++;
         else menuNotDone++;
       }
 
@@ -133,7 +135,7 @@ export async function GET(req: NextRequest) {
         blockedCount: menuBlocked,
         failedCount: menuFailed,
         readyToRetestCount: menuReadyRetest,
-        tbhCount: menuTbh,
+        tbaCount: menuTba,
         moduleId: firstModule?.id || null,
         moduleName: firstModule?.name || null,
       });
@@ -188,7 +190,7 @@ export async function GET(req: NextRequest) {
 
     const ungroupedProgress = ungroupedMenus.length > 0
       ? {
-          id: null as const,
+          id: null,
           name: 'Tanpa Module',
           totalMenus: ungroupedMenus.length,
           totalCases: ungroupedMenus.reduce((sum, m) => sum + m.totalCases, 0),
@@ -232,21 +234,122 @@ export async function GET(req: NextRequest) {
     }
     const pageGroups = Object.entries(pageGroupMap).map(([page, count]) => ({ page, _count: { id: count } }));
 
-    // Overall progress uses active (non-TBH) test cases only
+    // Overall progress uses active (non-TBA) test cases only
     const overallProgress = activeCount > 0 ? Math.round((doneCount / activeCount) * 100) : 0;
 
     // BugFix stats
     const bugFixItems = await db.bugFix.findMany({
       where: { projectId },
-      select: { id: true, status: true },
+      select: {
+        id: true,
+        sourceTestCaseId: true,
+        testCaseId: true,
+        page: true,
+        subMenu: true,
+        testAction: true,
+        priority: true,
+        status: true,
+        reportedAt: true,
+        fixingAt: true,
+        readyAt: true,
+        fixedAt: true,
+        updatedAt: true,
+        moduleId: true,
+        module: { select: { id: true, name: true } },
+      },
     });
     const bugFixReported = bugFixItems.filter(bf => bf.status === 'SUDAH DILAPORKAN').length;
     const bugFixFixing = bugFixItems.filter(bf => bf.status === 'SEDANG DI FIX').length;
     const bugFixReadyRetest = bugFixItems.filter(bf => bf.status === 'READY TO RETEST').length;
+    const bugFixFixed = bugFixItems.filter(bf => bf.status === 'VERIFIED & FIXED').length;
+    const now = Date.now();
+    const getAgeDays = (date: Date | null) => {
+      if (!date) return 0;
+      return Math.max(0, Math.floor((now - date.getTime()) / (1000 * 60 * 60 * 24)));
+    };
+
+    const retestQueue = allTestCases
+      .filter(tc => tc.status === 'READY TO RETEST')
+      .sort((a, b) => a.updatedAt.getTime() - b.updatedAt.getTime())
+      .slice(0, 8)
+      .map(tc => ({
+        id: tc.id,
+        testCaseId: tc.testCaseId,
+        page: tc.page,
+        subMenu: tc.subMenu,
+        priority: tc.priority,
+        moduleName: tc.module?.name || null,
+        updatedAt: tc.updatedAt,
+        waitingDays: getAgeDays(tc.updatedAt),
+      }));
+
+    const bugAging = bugFixItems
+      .filter(bf => bf.status === 'SUDAH DILAPORKAN' || bf.status === 'SEDANG DI FIX')
+      .map(bf => ({
+        id: bf.id,
+        testCaseId: bf.testCaseId,
+        page: bf.page,
+        subMenu: bf.subMenu,
+        testAction: bf.testAction,
+        priority: bf.priority,
+        status: bf.status,
+        moduleName: bf.module?.name || null,
+        startedAt: bf.fixingAt || bf.reportedAt || bf.updatedAt,
+        ageDays: getAgeDays(bf.fixingAt || bf.reportedAt || bf.updatedAt),
+      }))
+      .sort((a, b) => b.ageDays - a.ageDays)
+      .slice(0, 8);
+
+    const moduleRiskMap = new Map<string, {
+      moduleId: string | null;
+      moduleName: string;
+      total: number;
+      failed: number;
+      readyToRetest: number;
+      inProgress: number;
+      blocked: number;
+      notDone: number;
+      riskScore: number;
+    }>();
+    const getModuleRisk = (moduleId: string | null, moduleName: string) => {
+      const key = moduleId || '__ungrouped__';
+      if (!moduleRiskMap.has(key)) {
+        moduleRiskMap.set(key, {
+          moduleId,
+          moduleName,
+          total: 0,
+          failed: 0,
+          readyToRetest: 0,
+          inProgress: 0,
+          blocked: 0,
+          notDone: 0,
+          riskScore: 0,
+        });
+      }
+      return moduleRiskMap.get(key)!;
+    };
+
+    for (const tc of activeTestCases) {
+      const bucket = getModuleRisk(tc.moduleId, tc.module?.name || 'Tanpa Module');
+      bucket.total++;
+      if (tc.status === 'FAILED') bucket.failed++;
+      else if (tc.status === 'READY TO RETEST') bucket.readyToRetest++;
+      else if (tc.status === 'IN PROGRESS') bucket.inProgress++;
+      else if (tc.status === 'BLOCKED') bucket.blocked++;
+      else if (tc.status === 'NOT DONE') bucket.notDone++;
+    }
+
+    const moduleRisks = Array.from(moduleRiskMap.values())
+      .map(item => ({
+        ...item,
+        riskScore: item.failed * 5 + item.blocked * 4 + item.readyToRetest * 3 + item.inProgress * 2 + item.notDone,
+      }))
+      .sort((a, b) => b.riskScore - a.riskScore)
+      .slice(0, 6);
 
     return NextResponse.json({
       totalTestCases,
-      tbhCount,
+      tbaCount,
       activeCount,
       doneCount,
       notDoneCount,
@@ -258,6 +361,7 @@ export async function GET(req: NextRequest) {
       bugFixReported,
       bugFixFixing,
       bugFixReadyRetest,
+      bugFixFixed,
       positiveCount,
       negativeCount,
       criticalCount,
@@ -271,6 +375,9 @@ export async function GET(req: NextRequest) {
       menuProgress,
       moduleProgress,
       ungroupedProgress,
+      retestQueue,
+      bugAging,
+      moduleRisks,
     });
   } catch (error) {
     console.error('GET /api/stats error:', error);

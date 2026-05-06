@@ -8,14 +8,15 @@ datasource db {
 }
 
 model Project {
-  id          String      @id @default(cuid())
-  name        String
-  description String?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
-  testCases   TestCase[]
-  bugFixItems BugFix[]
-  modules     Module[]
+  id                String      @id @default(cuid())
+  name              String
+  description       String?
+  automationContext String?     // Object Repository info for AI
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  testCases         TestCase[]
+  bugFixItems       BugFix[]
+  modules           Module[]
 }
 
 model Module {
@@ -38,9 +39,10 @@ model TestCase {
   testType       String    // Positive / Negative
   testAction     String    // Description of the test action
   steps          String    // Test steps (multiline)
+  stepLogs       String?   // Console logs per step (multiline)
   expectedResult String    // Expected result
   actualResult   String?   // "As Expected" / "Not As Expected"
-  status         String    @default("NOT DONE") // DONE, NOT DONE, IN PROGRESS, BLOCKED, FAILED, READY TO RETEST, TBH
+  status         String    @default("NOT DONE") // DONE, NOT DONE, IN PROGRESS, BLOCKED, FAILED, READY TO RETEST, TBA
   progress       Int       @default(0) // 0-100
   remarks        String?   // Remarks / notes
   priority       String    @default("Medium") // Low, Medium, High, Critical
@@ -63,14 +65,16 @@ model BugFix {
   testType         String
   testAction       String
   steps            String
+  stepLogs         String?
   expectedResult   String
   actualResult     String    // Always "Not As Expected" for bug fix items
   priority         String
   moduleId         String?
-  status           String    @default("SUDAH DILAPORKAN") // SUDAH DILAPORKAN, SEDANG DI FIX, READY TO RETEST
+  status           String    @default("SUDAH DILAPORKAN") // SUDAH DILAPORKAN, SEDANG DI FIX, READY TO RETEST, VERIFIED & FIXED
   reportedAt       DateTime? // timestamp when reported
   fixingAt         DateTime? // timestamp when developer starts fixing
   readyAt          DateTime? // timestamp when ready to retest
+  fixedAt          DateTime? // timestamp when verified and fixed
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 

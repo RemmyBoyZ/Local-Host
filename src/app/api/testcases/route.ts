@@ -10,7 +10,7 @@ const getProgressFromStatus = (status: string): number => {
     case 'NOT DONE': return 0;
     case 'FAILED': return 0;
     case 'READY TO RETEST': return 50;
-    case 'TBH': return 0; // Excluded from progress calculations
+    case 'TBA': return 0; // Excluded from progress calculations
     default: return 0;
   }
 };
@@ -37,6 +37,7 @@ export async function GET(req: NextRequest) {
     if (priority) where.priority = priority;
     if (search) {
       where.OR = [
+        { id: { contains: search } },
         { testCaseId: { contains: search } },
         { page: { contains: search } },
         { subMenu: { contains: search } },
@@ -49,7 +50,28 @@ export async function GET(req: NextRequest) {
     const total = await db.testCase.count({ where });
     const testCases = await db.testCase.findMany({
       where,
-      include: { project: true, module: true },
+      select: {
+        id: true,
+        testCaseId: true,
+        page: true,
+        subMenu: true,
+        weight: true,
+        testType: true,
+        testAction: true,
+        steps: true,
+        expectedResult: true,
+        actualResult: true,
+        status: true,
+        progress: true,
+        remarks: true,
+        priority: true,
+        projectId: true,
+        moduleId: true,
+        createdAt: true,
+        updatedAt: true,
+        project: true,
+        module: true,
+      },
       orderBy: { [sortBy]: sortOrder },
       skip: (page - 1) * limit,
       take: limit,
@@ -129,18 +151,18 @@ export async function PUT(req: NextRequest) {
     });
     if (!current) return NextResponse.json({ error: 'Test case not found' }, { status: 404 });
 
-    // If actualResult is being set to "Not As Expected", auto-set status to FAILED
-    let finalStatus = data.status;
+    // Keep status and actual result in sync for the bug-fix retest flow.
+    let finalStatus = data.status ?? current.status;
     let finalActualResult = data.actualResult !== undefined ? data.actualResult : current.actualResult;
 
-    if (finalActualResult === 'Not As Expected' && current.status !== 'FAILED') {
+    if (finalStatus === 'DONE') {
+      finalActualResult = 'As Expected';
+    }
+
+    if (finalActualResult === 'Not As Expected') {
       finalStatus = 'FAILED';
-    } else if (finalActualResult === 'As Expected' && current.status === 'FAILED') {
-      // If actual result changes back to "As Expected", revert to DONE
+    } else if (finalActualResult === 'As Expected' && (current.status === 'FAILED' || finalStatus === 'DONE')) {
       finalStatus = 'DONE';
-    } else if (finalStatus === undefined) {
-      // Keep the current status if no status change was triggered
-      finalStatus = current.status;
     }
 
     // Handle moduleId: convert empty string to null for Prisma
@@ -149,6 +171,8 @@ export async function PUT(req: NextRequest) {
     const finalSubMenu = data.subMenu === '' ? null : data.subMenu;
     // Handle actualResult: convert empty string to null
     const finalActualResultForDb = finalActualResult === '' ? null : finalActualResult;
+    const shouldWriteActualResult = data.actualResult !== undefined
+      || (finalStatus === 'DONE' && finalActualResultForDb === 'As Expected' && current.actualResult !== 'As Expected');
 
     // Auto-calculate progress from status
     const progress = getProgressFromStatus(finalStatus || current.status);
@@ -164,7 +188,8 @@ export async function PUT(req: NextRequest) {
         ...(data.testAction !== undefined && { testAction: data.testAction }),
         ...(data.steps !== undefined && { steps: data.steps }),
         ...(data.expectedResult !== undefined && { expectedResult: data.expectedResult }),
-        ...(data.actualResult !== undefined && { actualResult: finalActualResultForDb }),
+        ...(shouldWriteActualResult && { actualResult: finalActualResultForDb }),
+        ...(data.stepLogs !== undefined && { stepLogs: data.stepLogs }),
         ...(finalStatus !== undefined && { status: finalStatus }),
         ...(progress !== undefined && { progress }),
         ...(data.remarks !== undefined && { remarks: data.remarks }),
@@ -199,6 +224,18 @@ export async function PUT(req: NextRequest) {
           },
         });
       }
+    } else if (finalStatus === 'DONE' || finalActualResultForDb === 'As Expected') {
+      // A bug is only verified after its source test case passes retest.
+      await db.bugFix.updateMany({
+        where: { 
+          sourceTestCaseId: id,
+          status: { not: 'VERIFIED & FIXED' }
+        },
+        data: {
+          status: 'VERIFIED & FIXED',
+          fixedAt: new Date()
+        }
+      });
     }
 
     // Recalculate weights if page/subMenu changed (background, non-blocking)
@@ -260,9 +297,9 @@ export async function DELETE(req: NextRequest) {
 
 // Helper: Recalculate weight for all test cases in a menu
 async function recalculateWeights(projectId: string, page: string, subMenu: string | null) {
-  // Only count active (non-TBH) test cases for weight calculation
+  // Only count active (non-TBA) test cases for weight calculation
   const casesInMenu = await db.testCase.findMany({
-    where: { projectId, page, subMenu: subMenu || null, status: { not: 'TBH' } },
+    where: { projectId, page, subMenu: subMenu || null, status: { not: 'TBA' } },
     select: { id: true },
   });
 
@@ -277,12 +314,12 @@ async function recalculateWeights(projectId: string, page: string, subMenu: stri
     });
   }
 
-  // Set weight to null for TBH test cases in this menu (they don't contribute)
-  const tbhCases = await db.testCase.findMany({
-    where: { projectId, page, subMenu: subMenu || null, status: 'TBH' },
+  // Set weight to null for TBA test cases in this menu (they don't contribute)
+  const tbaCases = await db.testCase.findMany({
+    where: { projectId, page, subMenu: subMenu || null, status: 'TBA' },
     select: { id: true },
   });
-  for (const tc of tbhCases) {
+  for (const tc of tbaCases) {
     await db.testCase.update({
       where: { id: tc.id },
       data: { weight: null },

@@ -1,0 +1,770 @@
+const { WebSocketServer } = require('ws');
+const WebSocket = require('ws');
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { spawn } = require('child_process');
+
+const wss = new WebSocketServer({ noServer: true });
+const clients = new Set();
+const activeManualSessions = new Map();
+const cdpSessions = new Map();
+
+// Ensure logs directory exists
+const LOGS_DIR = path.join(__dirname, 'logs');
+const RECORDINGS_DIR = path.join(__dirname, 'recordings');
+if (!fs.existsSync(LOGS_DIR)) {
+  fs.mkdirSync(LOGS_DIR, { recursive: true });
+}
+if (!fs.existsSync(RECORDINGS_DIR)) {
+  fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
+}
+
+// WebSocket connection handling
+wss.on('connection', (ws) => {
+  console.log('Web UI Client connected');
+  clients.add(ws);
+  ws.on('close', () => {
+    console.log('Web UI Client disconnected');
+    clients.delete(ws);
+  });
+  ws.on('error', (err) => console.error('WebSocket Client Error:', err));
+});
+
+// Broadcast helper: Meneruskan data ke semua browser yang konek
+function broadcast(data) {
+  const message = typeof data === 'string' ? data : JSON.stringify(data);
+  
+  clients.forEach((client) => {
+    if (client.readyState === 1) { // 1 = OPEN
+      try {
+        client.send(message, (err) => {
+          if (err) console.error('Send Error:', err);
+        });
+      } catch (e) {
+        console.error('Broadcast Error:', e);
+      }
+    }
+  });
+}
+
+function getRunPaths(testCaseId) {
+  return {
+    current: path.join(LOGS_DIR, `${testCaseId}.current.jsonl`),
+    previous: path.join(LOGS_DIR, `${testCaseId}.previous.jsonl`),
+    legacy: path.join(LOGS_DIR, `${testCaseId}.jsonl`),
+  };
+}
+
+function isRunStart(logData) {
+  const text = String(logData.log || '');
+  return /Starting\s+.*(Automation|Manual\s+Capture)/i.test(text);
+}
+
+function rotateRunIfNeeded(logData) {
+  if (!logData.testCaseId || !isRunStart(logData)) return;
+
+  const { current, previous } = getRunPaths(logData.testCaseId);
+  if (!fs.existsSync(current)) return;
+
+  try {
+    fs.copyFileSync(current, previous);
+    fs.truncateSync(current, 0);
+    console.log(`[LOG ROTATE] Previous run saved for TC: ${logData.testCaseId}`);
+  } catch (err) {
+    console.error(`Failed to rotate log for ${logData.testCaseId}:`, err.message);
+  }
+}
+
+// Persistence helper: Simpan log current run ke file JSONL.
+// History hanya menyimpan satu run sebelumnya: current -> previous saat run baru dimulai.
+function saveLog(logData) {
+  if (!logData.testCaseId) return;
+
+  rotateRunIfNeeded(logData);
+
+  const { current } = getRunPaths(logData.testCaseId);
+  const logEntry = JSON.stringify({
+    ...logData,
+    timestamp: logData.timestamp || new Date().toISOString()
+  }) + '\n';
+  
+  fs.appendFile(current, logEntry, (err) => {
+    if (err) console.error(`Failed to save log for ${logData.testCaseId}:`, err);
+  });
+}
+
+function sendJson(res, status, payload) {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(payload));
+}
+
+function readJsonBody(req, callback) {
+  let body = '';
+  req.on('data', chunk => {
+    body += chunk.toString();
+    if (body.length > 2_000_000) {
+      req.destroy();
+    }
+  });
+  req.on('end', () => {
+    try {
+      callback(null, body ? JSON.parse(body) : {});
+    } catch (error) {
+      callback(error);
+    }
+  });
+}
+
+function emitLog(logData) {
+  saveLog(logData);
+  broadcast(logData);
+}
+
+function getManualSession(sessionId) {
+  if (!sessionId) return null;
+  return activeManualSessions.get(sessionId) || null;
+}
+
+function isStoppedManualLog(logData) {
+  return String(logData.source || '').startsWith('manual-')
+    && logData.sessionId
+    && getManualSession(logData.sessionId)?.active !== true;
+}
+
+function getRelativeMs(session) {
+  const startedAtMs = Number(session?.startedAtMs || new Date(session?.startedAt || 0).getTime());
+  return Number.isFinite(startedAtMs) && startedAtMs > 0 ? Math.max(0, Date.now() - startedAtMs) : 0;
+}
+
+function truncateText(value, maxLength = 4000) {
+  if (value == null) return value;
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  return text.length > maxLength ? `${text.slice(0, maxLength)}... [truncated]` : text;
+}
+
+function isSensitiveKey(key) {
+  return /authorization|cookie|token|password|secret|apikey|api-key|access_token|refresh_token|pin/i.test(String(key));
+}
+
+function redactDeep(value) {
+  if (Array.isArray(value)) return value.map(redactDeep);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, isSensitiveKey(key) ? '[REDACTED]' : redactDeep(item)])
+  );
+}
+
+function redactPayload(value) {
+  if (value == null) return value;
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+
+  try {
+    return truncateText(JSON.stringify(redactDeep(JSON.parse(text))));
+  } catch (_) {}
+
+  try {
+    const params = new URLSearchParams(text);
+    if (Array.from(params.keys()).length > 0) {
+      for (const key of Array.from(params.keys())) {
+        if (isSensitiveKey(key)) params.set(key, '[REDACTED]');
+      }
+      return truncateText(params.toString());
+    }
+  } catch (_) {}
+
+  return truncateText(
+    text
+      .replace(/("?(?:password|pin|token|access_token|refresh_token|secret)"?\s*[:=]\s*)("[^"]*"|[^,&}\s]+)/gi, '$1"[REDACTED]"')
+      .replace(/((?:password|pin|token|access_token|refresh_token|secret)=)[^&\s]+/gi, '$1[REDACTED]')
+  );
+}
+
+function redactHeaders(headers = {}) {
+  const output = {};
+  for (const [key, value] of Object.entries(headers || {})) {
+    output[key] = isSensitiveKey(key)
+      ? '[REDACTED]'
+      : value;
+  }
+  return output;
+}
+
+function findBrowserPath() {
+  const candidates = [
+    path.join(process.env.ProgramFiles || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    path.join(process.env['ProgramFiles(x86)'] || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    path.join(process.env.ProgramFiles || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    path.join(process.env['ProgramFiles(x86)'] || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+  ];
+  return candidates.find(candidate => candidate && fs.existsSync(candidate));
+}
+
+function httpJson(url, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const request = http.get(url, (response) => {
+      let body = '';
+      response.on('data', chunk => { body += chunk.toString(); });
+      response.on('end', () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    request.on('error', reject);
+    request.setTimeout(timeoutMs, () => {
+      request.destroy(new Error(`Timeout requesting ${url}`));
+    });
+  });
+}
+
+async function waitForCdpPage(port, targetUrl) {
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    try {
+      const targets = await httpJson(`http://127.0.0.1:${port}/json/list`);
+      const pages = targets.filter(target => target.type === 'page');
+      const exact = pages.find(target => target.url && target.url.startsWith(targetUrl.split('?')[0]));
+      const first = exact || pages[0];
+      if (first?.webSocketDebuggerUrl) return first;
+    } catch (_) {}
+    await new Promise(resolve => setTimeout(resolve, 300));
+  }
+  throw new Error('Chrome DevTools target tidak ditemukan');
+}
+
+function createCdpClient(wsUrl) {
+  const ws = new WebSocket(wsUrl);
+  let nextId = 1;
+  const pending = new Map();
+
+  const send = (method, params = {}) => new Promise((resolve, reject) => {
+    const id = nextId++;
+    pending.set(id, { resolve, reject });
+    ws.send(JSON.stringify({ id, method, params }), (error) => {
+      if (error) {
+        pending.delete(id);
+        reject(error);
+      }
+    });
+  });
+
+  ws.on('message', (data) => {
+    try {
+      const message = JSON.parse(data.toString());
+      if (message.id && pending.has(message.id)) {
+        const promise = pending.get(message.id);
+        pending.delete(message.id);
+        if (message.error) promise.reject(new Error(message.error.message));
+        else promise.resolve(message.result);
+      }
+    } catch (error) {
+      console.error('CDP message parse error:', error.message);
+    }
+  });
+
+  return {
+    ws,
+    send,
+    waitOpen: () => new Promise((resolve, reject) => {
+      ws.once('open', resolve);
+      ws.once('error', reject);
+    }),
+  };
+}
+
+function getRecordingPaths(testCaseId, sessionId) {
+  const safeTestCaseId = encodeURIComponent(testCaseId);
+  const safeSessionId = encodeURIComponent(sessionId);
+  const baseDir = path.join(RECORDINGS_DIR, safeTestCaseId, safeSessionId);
+  return {
+    baseDir,
+    framesDir: path.join(baseDir, 'frames'),
+    metadata: path.join(baseDir, 'metadata.json'),
+  };
+}
+
+function buildRecordingFrameUrl(testCaseId, sessionId, file) {
+  return `/recordings/${encodeURIComponent(testCaseId)}/${encodeURIComponent(sessionId)}/frames/${encodeURIComponent(file)}`;
+}
+
+function writeRecordingMetadata(recording) {
+  if (!recording) return;
+  const payload = {
+    sessionId: recording.sessionId,
+    testCaseId: recording.testCaseId,
+    targetUrl: recording.targetUrl,
+    startedAt: recording.startedAt,
+    stoppedAt: recording.stoppedAt || null,
+    frameIntervalMs: recording.frameIntervalMs,
+    status: recording.status,
+    frames: recording.frames.map(frame => ({
+      ...frame,
+      url: buildRecordingFrameUrl(recording.testCaseId, recording.sessionId, frame.file),
+    })),
+  };
+
+  try {
+    fs.writeFileSync(recording.paths.metadata, JSON.stringify(payload, null, 2));
+  } catch (error) {
+    console.error('Failed to write recording metadata:', error.message);
+  }
+}
+
+function startFrameRecorder(session, cdp, targetUrl) {
+  const frameIntervalMs = 750;
+  const paths = getRecordingPaths(session.testCaseId, session.sessionId);
+  fs.mkdirSync(paths.framesDir, { recursive: true });
+
+  const recording = {
+    sessionId: session.sessionId,
+    testCaseId: session.testCaseId,
+    targetUrl,
+    startedAt: session.startedAt,
+    stoppedAt: null,
+    frameIntervalMs,
+    status: 'recording',
+    frames: [],
+    frameIndex: 0,
+    timer: null,
+    paths,
+    capturing: false,
+  };
+
+  const captureFrame = async () => {
+    const currentSession = getManualSession(session.sessionId);
+    if (!currentSession?.active || recording.capturing) return;
+
+    recording.capturing = true;
+    try {
+      const result = await cdp.send('Page.captureScreenshot', {
+        format: 'jpeg',
+        quality: 48,
+        captureBeyondViewport: false,
+      });
+      if (!result?.data) return;
+
+      recording.frameIndex += 1;
+      const file = `${String(recording.frameIndex).padStart(6, '0')}.jpg`;
+      fs.writeFileSync(path.join(paths.framesDir, file), Buffer.from(result.data, 'base64'));
+      recording.frames.push({
+        file,
+        relativeMs: getRelativeMs(currentSession),
+        timestamp: new Date().toISOString(),
+      });
+
+      if (recording.frames.length % 8 === 0) writeRecordingMetadata(recording);
+    } catch (error) {
+      if (getManualSession(session.sessionId)?.active) {
+        console.warn('Manual recording frame skipped:', error.message);
+      }
+    } finally {
+      recording.capturing = false;
+    }
+  };
+
+  recording.timer = setInterval(captureFrame, frameIntervalMs);
+  setTimeout(captureFrame, 500);
+  writeRecordingMetadata(recording);
+  return recording;
+}
+
+function stopFrameRecorder(recording) {
+  if (!recording) return null;
+  if (recording.timer) clearInterval(recording.timer);
+  recording.timer = null;
+  recording.status = 'stopped';
+  recording.stoppedAt = new Date().toISOString();
+  writeRecordingMetadata(recording);
+  return {
+    sessionId: recording.sessionId,
+    testCaseId: recording.testCaseId,
+    frameCount: recording.frames.length,
+    metadataUrl: `/recordings/${encodeURIComponent(recording.testCaseId)}/${encodeURIComponent(recording.sessionId)}/metadata`,
+  };
+}
+
+function readRecordingMetadata(testCaseId, sessionId) {
+  const paths = getRecordingPaths(testCaseId, sessionId);
+  if (!fs.existsSync(paths.metadata)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(paths.metadata, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function getLatestRecordingMetadata(testCaseId) {
+  const testCaseDir = path.join(RECORDINGS_DIR, encodeURIComponent(testCaseId));
+  if (!fs.existsSync(testCaseDir)) return null;
+
+  const sessionDirs = fs.readdirSync(testCaseDir, { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => path.join(testCaseDir, entry.name))
+    .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+
+  for (const sessionDir of sessionDirs) {
+    const metadataPath = path.join(sessionDir, 'metadata.json');
+    if (!fs.existsSync(metadataPath)) continue;
+    try {
+      return JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function startCdpCapture(session, targetUrl) {
+  const browserPath = findBrowserPath();
+  if (!browserPath) throw new Error('Chrome atau Edge tidak ditemukan untuk manual capture');
+
+  const port = 9300 + Math.floor(Math.random() * 500);
+  const userDataDir = path.join(os.tmpdir(), `qadesk-manual-${session.sessionId}`);
+  const browser = spawn(browserPath, [
+    `--remote-debugging-port=${port}`,
+    `--user-data-dir=${userDataDir}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    targetUrl,
+  ], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  browser.unref();
+
+  const target = await waitForCdpPage(port, targetUrl);
+  const cdp = createCdpClient(target.webSocketDebuggerUrl);
+  await cdp.waitOpen();
+
+  const sessionInfo = {
+    browser,
+    cdp,
+    requestMeta: new Map(),
+    userDataDir,
+    recording: null,
+  };
+  cdpSessions.set(session.sessionId, sessionInfo);
+
+  cdp.ws.on('message', async (data) => {
+    let message;
+    try {
+      message = JSON.parse(data.toString());
+    } catch {
+      return;
+    }
+    if (!message.method) return;
+    const currentSession = getManualSession(session.sessionId);
+    if (!currentSession?.active) return;
+
+    if (message.method === 'Runtime.consoleAPICalled') {
+      const args = message.params.args || [];
+      emitLog({
+        type: 'log',
+        source: 'manual-cdp',
+        sessionId: session.sessionId,
+        testCaseId: session.testCaseId,
+        level: message.params.type === 'error' ? 'SEVERE' : message.params.type === 'warning' ? 'WARNING' : 'INFO',
+        console: true,
+        log: args.map(arg => truncateText(arg.value ?? arg.description ?? arg.type)).join(' '),
+        timestamp: new Date().toISOString(),
+        relativeMs: getRelativeMs(currentSession),
+      });
+    }
+
+    if (message.method === 'Runtime.exceptionThrown') {
+      emitLog({
+        type: 'log',
+        source: 'manual-cdp',
+        sessionId: session.sessionId,
+        testCaseId: session.testCaseId,
+        level: 'SEVERE',
+        console: true,
+        log: message.params.exceptionDetails?.text || 'Runtime exception',
+        timestamp: new Date().toISOString(),
+        relativeMs: getRelativeMs(currentSession),
+      });
+    }
+
+    if (message.method === 'Network.requestWillBeSent') {
+      sessionInfo.requestMeta.set(message.params.requestId, {
+        method: message.params.request.method,
+        url: message.params.request.url,
+        headers: redactHeaders(message.params.request.headers),
+        requestBody: redactPayload(message.params.request.postData),
+        startedAt: Date.now(),
+      });
+    }
+
+    if (message.method === 'Network.responseReceived') {
+      const request = sessionInfo.requestMeta.get(message.params.requestId) || {};
+      const response = message.params.response;
+      sessionInfo.requestMeta.set(message.params.requestId, {
+        ...request,
+        status: response.status,
+        responseHeaders: redactHeaders(response.headers),
+      });
+    }
+
+    if (message.method === 'Network.loadingFinished') {
+      const request = sessionInfo.requestMeta.get(message.params.requestId);
+      if (!request?.url) return;
+      let body = null;
+      try {
+        const result = await cdp.send('Network.getResponseBody', { requestId: message.params.requestId });
+        body = result?.base64Encoded ? '[base64 response omitted]' : redactPayload(result?.body);
+      } catch (_) {}
+      sessionInfo.requestMeta.delete(message.params.requestId);
+      emitLog({
+        type: 'log',
+        source: 'manual-cdp',
+        sessionId: session.sessionId,
+        testCaseId: session.testCaseId,
+        log: 'Network Trace',
+        network: {
+          event: 'Response',
+          method: request.method,
+          url: request.url,
+          status: request.status,
+          success: typeof request.status === 'number' ? request.status < 400 : undefined,
+          duration: Date.now() - request.startedAt,
+          headers: request.responseHeaders || request.headers,
+          data: {
+            requestHeaders: request.headers,
+            requestBody: request.requestBody,
+            responseBody: body,
+          },
+        },
+        timestamp: new Date().toISOString(),
+        relativeMs: getRelativeMs(currentSession),
+      });
+    }
+  });
+
+  cdp.ws.on('close', () => {
+    const currentSession = getManualSession(session.sessionId);
+    if (currentSession?.active) {
+      activeManualSessions.set(session.sessionId, {
+        ...currentSession,
+        active: false,
+        stoppedAt: new Date().toISOString(),
+      });
+    }
+    stopFrameRecorder(sessionInfo.recording);
+    cdpSessions.delete(session.sessionId);
+  });
+
+  await cdp.send('Runtime.enable');
+  await cdp.send('Network.enable');
+  await cdp.send('Page.enable');
+  sessionInfo.recording = startFrameRecorder(session, cdp, targetUrl);
+  return { port, mode: 'cdp' };
+}
+
+async function stopCdpCapture(sessionId) {
+  const session = cdpSessions.get(sessionId);
+  if (!session) return { browserClosed: false, cdpClosed: false, recording: null, errors: [] };
+
+  const result = { browserClosed: false, cdpClosed: false, recording: null, errors: [] };
+  result.recording = stopFrameRecorder(session.recording);
+  try {
+    await session.cdp.send('Browser.close');
+    result.browserClosed = true;
+  } catch (error) {
+    result.errors.push(`Browser.close failed: ${error.message}`);
+  }
+  try {
+    session.cdp.ws.close();
+    result.cdpClosed = true;
+  } catch (error) {
+    result.errors.push(`CDP close failed: ${error.message}`);
+  }
+  try {
+    if (!session.browser.killed) {
+      session.browser.kill();
+      result.browserClosed = true;
+    }
+  } catch (error) {
+    result.errors.push(`Browser kill failed: ${error.message}`);
+  }
+  cdpSessions.delete(sessionId);
+  if (session.userDataDir) {
+    setTimeout(() => {
+      fs.rm(session.userDataDir, { recursive: true, force: true }, () => {});
+    }, 1500);
+  }
+  return result;
+}
+
+// HTTP Server: Menerima POST /log dari Katalon
+const server = http.createServer((req, res) => {
+  // Add CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  const requestUrl = new URL(req.url, 'http://localhost:3001');
+
+  if (req.method === 'POST' && requestUrl.pathname === '/log') {
+    readJsonBody(req, (error, logData) => {
+      try {
+        if (error) throw error;
+        if (isStoppedManualLog(logData)) {
+          return sendJson(res, 409, { success: false, error: 'Manual capture session is not active' });
+        }
+
+        console.log(`[HTTP IN] Received log #${logData.type} for TC: ${logData.testCaseId}`);
+        emitLog(logData);
+
+        sendJson(res, 200, { success: true });
+      } catch (e) {
+        console.error('Invalid JSON received:', e.message);
+        sendJson(res, 400, { success: false, error: 'Invalid JSON' });
+      }
+    });
+  } else if (req.method === 'POST' && requestUrl.pathname === '/manual/start') {
+    readJsonBody(req, async (error, data) => {
+      if (error) return sendJson(res, 400, { success: false, error: 'Invalid JSON' });
+      const { testCaseId, sessionId, targetUrl, launchBrowser } = data;
+      if (!testCaseId || !sessionId) {
+        return sendJson(res, 400, { success: false, error: 'testCaseId and sessionId are required' });
+      }
+
+      for (const [id, session] of activeManualSessions.entries()) {
+        if (session.testCaseId === testCaseId && session.active) {
+          activeManualSessions.set(id, { ...session, active: false, stoppedAt: new Date().toISOString() });
+          await stopCdpCapture(id);
+        }
+      }
+
+      const startedAtMs = Date.now();
+      const session = {
+        sessionId,
+        testCaseId,
+        targetUrl: targetUrl || null,
+        active: true,
+        startedAt: new Date(startedAtMs).toISOString(),
+        startedAtMs,
+      };
+      activeManualSessions.set(sessionId, session);
+
+      let captureMode = 'url-params';
+      try {
+        if (launchBrowser && targetUrl) {
+          const cdp = await startCdpCapture(session, targetUrl);
+          captureMode = cdp.mode;
+        }
+      } catch (error) {
+        activeManualSessions.set(sessionId, { ...session, active: false, stoppedAt: new Date().toISOString() });
+        return sendJson(res, 500, { success: false, error: error.message });
+      }
+
+      emitLog({
+        type: 'log',
+        source: 'manual-capture',
+        sessionId,
+        testCaseId,
+        level: 'INFO',
+        log: `Starting Manual Capture${targetUrl ? `: ${targetUrl}` : ''}`,
+        timestamp: session.startedAt,
+        relativeMs: 0,
+      });
+
+      sendJson(res, 200, { success: true, session, mode: captureMode });
+    });
+  } else if (req.method === 'POST' && requestUrl.pathname === '/manual/stop') {
+    readJsonBody(req, async (error, data) => {
+      if (error) return sendJson(res, 400, { success: false, error: 'Invalid JSON' });
+      const { sessionId } = data;
+      const session = getManualSession(sessionId);
+      if (!session) {
+        const cleanup = await stopCdpCapture(sessionId);
+        return sendJson(res, 200, { success: true, alreadyStopped: true, cleanup });
+      }
+
+      const stoppedAt = new Date().toISOString();
+      activeManualSessions.set(sessionId, { ...session, active: false, stoppedAt });
+      const cleanup = await stopCdpCapture(sessionId);
+      emitLog({
+        type: 'log',
+        source: 'manual-capture',
+        sessionId,
+        testCaseId: session.testCaseId,
+        level: 'INFO',
+        log: 'Manual Capture Stopped',
+        timestamp: stoppedAt,
+        relativeMs: getRelativeMs(session),
+      });
+
+      sendJson(res, 200, { success: true, cleanup });
+    });
+  } else if (req.method === 'GET' && requestUrl.pathname.startsWith('/manual/session/')) {
+    const sessionId = decodeURIComponent(requestUrl.pathname.split('/').pop());
+    const session = getManualSession(sessionId);
+    if (!session) return sendJson(res, 404, { success: false, active: false });
+    sendJson(res, 200, { success: true, ...session });
+  } else if (req.method === 'GET' && requestUrl.pathname.startsWith('/recordings/')) {
+    const parts = requestUrl.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+    const [, testCaseId, sessionId, type, file] = parts;
+
+    if (testCaseId && sessionId === 'latest') {
+      const metadata = getLatestRecordingMetadata(testCaseId);
+      if (!metadata) return sendJson(res, 404, { success: false, error: 'Recording not found' });
+      return sendJson(res, 200, { success: true, recording: metadata });
+    }
+
+    if (testCaseId && sessionId && type === 'metadata') {
+      const metadata = readRecordingMetadata(testCaseId, sessionId);
+      if (!metadata) return sendJson(res, 404, { success: false, error: 'Recording not found' });
+      return sendJson(res, 200, { success: true, recording: metadata });
+    }
+
+    if (testCaseId && sessionId && type === 'frames' && file) {
+      const paths = getRecordingPaths(testCaseId, sessionId);
+      const framePath = path.resolve(paths.framesDir, file);
+      const frameRoot = path.resolve(paths.framesDir);
+      if (!framePath.startsWith(frameRoot) || !fs.existsSync(framePath)) {
+        return sendJson(res, 404, { success: false, error: 'Frame not found' });
+      }
+      res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store' });
+      return fs.createReadStream(framePath).pipe(res);
+    }
+
+    sendJson(res, 404, { success: false, error: 'Recording not found' });
+  } else if (req.method === 'GET' && requestUrl.pathname.startsWith('/logs/')) {
+    // Ambil history: hanya run sebelumnya, bukan current run.
+    const tcId = decodeURIComponent(requestUrl.pathname.split('/').pop());
+    const { previous, legacy } = getRunPaths(tcId);
+    const filePath = fs.existsSync(previous) ? previous : legacy;
+    
+    if (fs.existsSync(filePath)) {
+      res.writeHead(200, { 'Content-Type': 'application/x-jsonlines' });
+      fs.createReadStream(filePath).pipe(res);
+    } else {
+      res.writeHead(404);
+      res.end('No previous run logs found for this test case');
+    }
+  } else {
+    res.writeHead(404);
+    res.end();
+  }
+});
+
+// Upgrade HTTP ke WebSocket
+server.on('upgrade', (request, socket, head) => {
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request);
+  });
+});
+
+server.listen(3001, () => {
+  console.log('Log Relay Server (HTTP + WS) started on http://localhost:3001');
+});

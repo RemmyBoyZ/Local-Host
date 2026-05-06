@@ -97,25 +97,16 @@ Stage Summary:
 ---
 Task ID: 3
 Agent: main
-Task: Add TBH (To Be Honed) status that excludes from percentage calculations
+Task: Add TBA (To Be Announced) status that excludes from percentage calculations (Renamed from TBH)
 
 Work Log:
-- Analyzed all status-related code across 5 files (stats route, testcases route, excel route, page.tsx, schema)
-- Added TBH status to all status definitions:
-  - prisma/schema.prisma: Added TBH to status comment
-  - api/stats/route.ts: Added tbhCount, activeCount fields; excluded TBH from weight/progress calculations
-  - api/testcases/route.ts: Added TBH to getProgressFromStatus(); excluded TBH from recalculateWeights()
-  - api/excel/route.ts: Added TBH/tbd/to be determined as import aliases
-  - page.tsx: Added TBH to all status dropdowns (filter, create, edit, bulk update), color (purple), icon (HelpCircle), dashboard card
-- Key calculation changes:
-  - activeTestCases = allTestCases.filter(tc => tc.status !== 'TBH')
-  - Weight calculation uses only active (non-TBH) test cases
-  - Menu progress uses only active test cases
-  - Overall progress = doneCount / activeCount (not totalTestCases)
-  - TBH test cases get weight = null in database
-- Tested: Set 2 test cases to TBH, verified they were excluded from progress
-  - Total: 351, TBH: 2, Active: 349, Progress unchanged at 26%
-- Built production version and deployed
+- Renamed TBH status to TBA across the entire codebase
+- Updated prisma/schema.prisma status comments
+- Updated api/stats/route.ts: renamed tbhCount to tbaCount and TBH to TBA
+- Updated api/testcases/route.ts: updated status logic and weight recalculation
+- Updated api/excel/route.ts: updated status normalization aliases
+- Updated page.tsx: updated all UI labels, state variables, and dashboard cards
+- Migrated 51 existing database records from status 'TBH' to 'TBA'
 
 Stage Summary:
 - TBH status fully implemented and working

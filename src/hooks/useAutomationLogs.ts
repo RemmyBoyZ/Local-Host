@@ -1,0 +1,438 @@
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
+import { useToast } from '@/hooks/use-toast';
+
+export type DevLogTab = 'console' | 'network' | 'execution';
+
+export interface AutomationLogEntry {
+  id?: string;
+  type?: string;
+  testCaseId?: string;
+  timestamp?: string | number | Date;
+  relativeMs?: number;
+  level?: string;
+  log?: unknown;
+  console?: unknown;
+  isExecution?: boolean;
+  isConsole?: boolean;
+  isNetwork?: boolean;
+  network?: {
+    event?: string;
+    method?: string;
+    url: string;
+    status?: number;
+    duration?: number;
+    headers?: unknown;
+    data?: unknown;
+    success?: boolean;
+  };
+}
+
+export interface ManualRecordingFrame {
+  file: string;
+  relativeMs: number;
+  timestamp: string;
+  url: string;
+}
+
+export interface ManualRecordingMeta {
+  sessionId: string;
+  testCaseId: string;
+  targetUrl?: string | null;
+  startedAt: string;
+  stoppedAt?: string | null;
+  frameIntervalMs: number;
+  status: 'recording' | 'stopped';
+  frames: ManualRecordingFrame[];
+}
+
+const DEBUG_AUTOMATION_LOGS = false;
+
+interface AutomationLogTestCase {
+  id: string;
+  stepLogs?: string | null;
+}
+
+interface UseAutomationLogsOptions<TTestCase extends AutomationLogTestCase> {
+  viewTestCase: TTestCase | null;
+  setViewTestCase: React.Dispatch<React.SetStateAction<TTestCase | null>>;
+}
+
+function createLogId() {
+  return Math.random().toString(36).slice(2, 11);
+}
+
+function normalizeLogEntry(message: AutomationLogEntry): AutomationLogEntry {
+  const isNetwork = !!message.network || message.log?.toString().startsWith('Network:');
+  const isConsole = !!message.level || !!message.console;
+  const isExecution = !isNetwork && !isConsole;
+
+  return {
+    ...message,
+    id: message.id || createLogId(),
+    timestamp: message.timestamp || new Date().toISOString(),
+    isExecution,
+    isConsole,
+    isNetwork,
+  };
+}
+
+export const filterConsoleLogs = (logs: AutomationLogEntry[]) => logs.filter(log => log.isConsole);
+
+export const filterNetworkLogs = (logs: AutomationLogEntry[]) => logs.filter(log => {
+  if (!log.isNetwork) return false;
+  const url = log.network?.url?.toLowerCase() || '';
+  const isStaticAsset = url.endsWith('.js') ||
+    url.endsWith('.css') ||
+    url.endsWith('.png') ||
+    url.endsWith('.jpg') ||
+    url.endsWith('.jpeg') ||
+    url.endsWith('.svg') ||
+    url.endsWith('.gif') ||
+    url.endsWith('.woff') ||
+    url.endsWith('.woff2') ||
+    url.includes('/assets/');
+
+  return !isStaticAsset;
+});
+
+export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
+  viewTestCase,
+  setViewTestCase,
+}: UseAutomationLogsOptions<TTestCase>) {
+  const { toast } = useToast();
+  const logEndRef = useRef<HTMLDivElement>(null);
+  const currentViewIdRef = useRef<string | null>(null);
+  const [socketReady, setSocketReady] = useState(false);
+  const [liveLogs, setLiveLogs] = useState<AutomationLogEntry[]>([]);
+  const [activeDevLogTab, setActiveDevLogTab] = useState<DevLogTab>('execution');
+  const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [aiSummary, setAiSummary] = useState<string | null>(null);
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const [manualCaptureTargetUrl, setManualCaptureTargetUrl] = useState('');
+  const [manualCaptureSessionId, setManualCaptureSessionId] = useState<string | null>(null);
+  const [manualRecording, setManualRecording] = useState<ManualRecordingMeta | null>(null);
+  const [isStartingManualCapture, setIsStartingManualCapture] = useState(false);
+  const [isStoppingManualCapture, setIsStoppingManualCapture] = useState(false);
+
+  const isManualCaptureActive = !!manualCaptureSessionId;
+
+  useEffect(() => {
+    currentViewIdRef.current = viewTestCase?.id || null;
+
+    if (!viewTestCase?.id) return;
+
+    setLiveLogs([]);
+    setExpandedLogId(null);
+    setAiSummary(null);
+    setManualRecording(null);
+    setActiveDevLogTab('execution');
+  }, [viewTestCase?.id]);
+
+  const loadLatestRecording = async (testCaseId = viewTestCase?.id) => {
+    if (!testCaseId) return null;
+
+    try {
+      const response = await fetch(`http://127.0.0.1:3001/recordings/${encodeURIComponent(testCaseId)}/latest`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.recording) {
+        setManualRecording(null);
+        return null;
+      }
+      setManualRecording(data.recording);
+      return data.recording as ManualRecordingMeta;
+    } catch {
+      setManualRecording(null);
+      return null;
+    }
+  };
+
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    let reconnectTimer: number | null = null;
+    let closedByHook = false;
+
+    const handleMessage = (event: MessageEvent) => {
+      try {
+        const message = JSON.parse(event.data) as AutomationLogEntry;
+        if (DEBUG_AUTOMATION_LOGS) {
+          console.log(`[WS INCOMING] Type: ${message.type}, TC: ${message.testCaseId}`);
+        }
+
+        if (message.type !== 'log' || !message.testCaseId) return;
+
+        const logEntry = normalizeLogEntry(message);
+
+        if (currentViewIdRef.current === message.testCaseId) {
+          if (DEBUG_AUTOMATION_LOGS) {
+            console.log(`[WS ACCEPTED] Matching TC ID: ${message.testCaseId}`);
+          }
+          setLiveLogs(prev => {
+            const next = [...prev, logEntry];
+            return next.length > 500 ? next.slice(next.length - 500) : next;
+          });
+
+          if (logEntry.isExecution) {
+            const logText = typeof message.log === 'string' ? message.log : JSON.stringify(message.log);
+            setViewTestCase(prev => {
+              if (prev && prev.id === message.testCaseId) {
+                return { ...prev, stepLogs: `${prev.stepLogs || ''}${logText}\n` };
+              }
+              return prev;
+            });
+          }
+        } else if (DEBUG_AUTOMATION_LOGS) {
+          console.warn(`[WS FILTERED OUT] Expected: ${currentViewIdRef.current}, Got: ${message.testCaseId}`);
+        }
+      } catch (error) {
+        console.error('[WS ERROR] Failed to process message:', error, event.data);
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (closedByHook || reconnectTimer !== null) return;
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, 2500);
+    };
+
+    const connect = () => {
+      if (closedByHook) return;
+
+      try {
+        ws = new WebSocket('ws://127.0.0.1:3001');
+      } catch {
+        setSocketReady(false);
+        scheduleReconnect();
+        return;
+      }
+
+      ws.onopen = () => {
+        console.log('Connected to Log Relay');
+        setSocketReady(true);
+      };
+
+      ws.onclose = () => {
+        setSocketReady(false);
+        scheduleReconnect();
+      };
+
+      ws.onerror = () => {
+        setSocketReady(false);
+      };
+
+      ws.onmessage = handleMessage;
+    };
+
+    connect();
+
+    return () => {
+      closedByHook = true;
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      ws?.close();
+    };
+  }, [setViewTestCase]);
+
+  useEffect(() => {
+    if (liveLogs.length > 0) {
+      logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [liveLogs]);
+
+  const loadLogHistory = async () => {
+    if (!viewTestCase?.id) return;
+    const targetId = viewTestCase.id;
+
+    setIsLoadingHistory(true);
+    try {
+      const response = await fetch(`http://localhost:3001/logs/${viewTestCase.id}`);
+      if (!response.ok) throw new Error('Riwayat run sebelumnya tidak ditemukan');
+
+      const text = await response.text();
+      const logs = text
+        .split('\n')
+        .filter(line => line.trim())
+        .map(line => {
+          try {
+            return normalizeLogEntry(JSON.parse(line));
+          } catch {
+            return null;
+          }
+        })
+        .filter((log): log is AutomationLogEntry => log !== null);
+
+      setLiveLogs(logs);
+      loadLatestRecording(targetId);
+      toast({
+        title: 'History Run Sebelumnya Dimuat',
+        description: `Berhasil memuat ${logs.length} entri log dari run sebelumnya.`,
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Gagal memuat riwayat',
+        description: error.message,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  };
+
+  const generateAISummary = async () => {
+    const targetId = viewTestCase?.id;
+    if (!targetId) return;
+
+    setIsSummarizing(true);
+    setAiSummary(null);
+    try {
+      const response = await fetch('/api/ai/summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ testCaseId: targetId.trim() }),
+      });
+      const data = await response.json();
+
+      if (data.summary) {
+        setAiSummary(data.summary);
+      } else {
+        throw new Error(data.error || 'Gagal generate summary');
+      }
+    } catch (error: any) {
+      toast({
+        title: 'Gagal Generate Summary',
+        description: error.message,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsSummarizing(false);
+    }
+  };
+
+  const clearLogs = () => {
+    setLiveLogs([]);
+    setViewTestCase(prev => prev ? { ...prev, stepLogs: '' } : null);
+  };
+
+  const buildManualCaptureUrl = (targetUrl: string, sessionId: string, testCaseId: string) => {
+    const url = new URL(targetUrl);
+    const relayUrl = 'http://127.0.0.1:3001';
+    url.searchParams.set('qaCapture', '1');
+    url.searchParams.set('qaTestCaseId', testCaseId);
+    url.searchParams.set('qaSessionId', sessionId);
+    url.searchParams.set('qaRelay', relayUrl);
+    url.searchParams.set('qaScript', `${window.location.origin}/qa-capture.js`);
+    return url.toString();
+  };
+
+  const startManualCapture = async () => {
+    if (!viewTestCase?.id) return;
+
+    setIsStartingManualCapture(true);
+    const sessionId = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    try {
+      const targetUrl = manualCaptureTargetUrl.trim();
+      if (!targetUrl) throw new Error('Isi URL target terlebih dahulu.');
+
+      const captureUrl = buildManualCaptureUrl(targetUrl, sessionId, viewTestCase.id);
+      const response = await fetch('http://127.0.0.1:3001/manual/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          testCaseId: viewTestCase.id,
+          sessionId,
+          targetUrl,
+          captureUrl,
+          launchBrowser: true,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Relay manual capture tidak siap.');
+
+      setLiveLogs([]);
+      setAiSummary(null);
+      setManualRecording(null);
+      setActiveDevLogTab('console');
+      setManualCaptureSessionId(sessionId);
+      toast({
+        title: 'Manual capture dimulai',
+        description: data.mode === 'cdp'
+          ? 'Chrome terkontrol sudah dibuka. Lakukan test manual di window tersebut.'
+          : 'Tab target sudah dibuka. Pastikan target app memuat qa-capture.js.',
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Gagal memulai manual capture',
+        description: error.message,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsStartingManualCapture(false);
+    }
+  };
+
+  const stopManualCapture = async () => {
+    if (!manualCaptureSessionId) return;
+
+    setIsStoppingManualCapture(true);
+    try {
+      const response = await fetch('http://127.0.0.1:3001/manual/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: manualCaptureSessionId }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Gagal menghentikan manual capture.');
+
+      setManualCaptureSessionId(null);
+      await loadLatestRecording(viewTestCase?.id);
+      const frameCount = data.cleanup?.recording?.frameCount;
+      toast({
+        title: 'Manual capture dihentikan',
+        description: typeof frameCount === 'number'
+          ? `Browser ditutup dan ${frameCount} frame recording tersimpan.`
+          : 'Browser ditutup dan log berikutnya dari session ini akan ditolak relay.',
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Gagal stop manual capture',
+        description: error.message,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsStoppingManualCapture(false);
+    }
+  };
+
+  return {
+    socketReady,
+    liveLogs,
+    activeDevLogTab,
+    expandedLogId,
+    isLoadingHistory,
+    aiSummary,
+    isSummarizing,
+    manualCaptureTargetUrl,
+    manualCaptureSessionId,
+    manualRecording,
+    isManualCaptureActive,
+    isStartingManualCapture,
+    isStoppingManualCapture,
+    logEndRef,
+    setManualCaptureTargetUrl,
+    setActiveDevLogTab,
+    setExpandedLogId,
+    setAiSummary,
+    clearLogs,
+    startManualCapture,
+    stopManualCapture,
+    loadLatestRecording,
+    generateAISummary,
+    loadLogHistory,
+    filterConsoleLogs,
+    filterNetworkLogs,
+  };
+}

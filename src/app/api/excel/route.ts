@@ -72,6 +72,176 @@ function getColValue(row: Record<string, unknown>, ...keys: string[]): string {
   return '';
 }
 
+const REQUIRED_IMPORT_FIELDS = ['ID', 'Page', 'Feature', 'Test', 'Expected Result', 'Status'];
+const VALID_IMPORT_STATUSES = new Set(['NOT DONE', 'IN PROGRESS', 'DONE', 'FAILED', 'READY TO RETEST', 'BLOCKED', 'TBA']);
+const PREVIEW_HEADERS = ['ID', 'Page', 'Sub Menu', 'Feature', 'Test', 'Expected Result', 'Actual Result', 'Status'];
+
+function getDetectedHeaders(sheet: XLSX.WorkSheet): string[] {
+  const headerRow = detectHeaderRowIndex(sheet);
+  const rawData: unknown[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+  return (rawData[headerRow] || []).map((h: unknown) => String(h || '').trim()).filter(Boolean);
+}
+
+function normalizeImportStatus(statusRaw: string, actualResultRaw: string): string {
+  let status = 'NOT DONE';
+  if (statusRaw) {
+    const lower = statusRaw.toLowerCase().trim();
+    if (lower === 'done' || lower === 'pass' || lower === 'passed' || lower === '✓') {
+      status = 'DONE';
+    } else if (lower === 'in progress' || lower === 'in-progress' || lower === 'wip') {
+      status = 'IN PROGRESS';
+    } else if (lower === 'blocked') {
+      status = 'BLOCKED';
+    } else if (lower === 'failed' || lower === 'fail' || lower === '✗') {
+      status = 'FAILED';
+    } else if (lower === 'ready to retest') {
+      status = 'READY TO RETEST';
+    } else if (lower === 'tba' || lower === 'to be announced' || lower === 'tbd' || lower === 'to be determined') {
+      status = 'TBA';
+    } else if (lower === 'not done' || lower === 'not done yet' || lower === 'todo') {
+      status = 'NOT DONE';
+    } else {
+      status = statusRaw.toUpperCase().trim();
+    }
+  }
+
+  const actualLower = actualResultRaw.toLowerCase().trim();
+  if ((actualLower === 'not as expected' || actualLower === 'fail' || actualLower === 'failed' || actualLower === '✗') && status === 'NOT DONE') {
+    return 'FAILED';
+  }
+  if ((actualLower === 'as expected' || actualLower === 'pass' || actualLower === 'passed' || actualLower === '✓') && status === 'NOT DONE') {
+    return 'DONE';
+  }
+  return status;
+}
+
+function buildPreviewRow(row: Record<string, unknown>) {
+  return Object.fromEntries(PREVIEW_HEADERS.map((header) => {
+    const value = header === 'ID'
+      ? getColValue(row, 'ID', 'Test Case ID', 'testCaseId')
+      : header === 'Sub Menu'
+        ? getColValue(row, 'Sub Menu', 'subMenu', 'Submenu')
+        : header === 'Test'
+          ? getColValue(row, 'Test', 'Test Action', 'testAction')
+          : getColValue(row, header, header.replace(/\s+/g, '').replace(/^./, (c) => c.toLowerCase()));
+    return [header, value];
+  }));
+}
+
+async function buildImportPreview(workbook: XLSX.WorkBook, projectId: string, createModules: boolean) {
+  const idCounts = new Map<string, number>();
+  const parsedSheets = workbook.SheetNames.map((sheetName) => {
+    const sheet = workbook.Sheets[sheetName];
+    const headerRow = sheet && sheet['!ref'] ? detectHeaderRowIndex(sheet) + 1 : null;
+    const headers = sheet && sheet['!ref'] ? getDetectedHeaders(sheet) : [];
+    const rows = sheet && sheet['!ref'] ? parseSheetWithAutoHeader(sheet) : [];
+    rows.forEach((row) => {
+      const id = getColValue(row, 'ID', 'Test Case ID', 'testCaseId');
+      if (id) idCounts.set(id, (idCounts.get(id) || 0) + 1);
+    });
+    return { sheetName, headerRow, headers, rows };
+  });
+
+  const allIds = [...idCounts.keys()];
+  const existingCases = allIds.length > 0
+    ? await db.testCase.findMany({
+      where: { projectId, testCaseId: { in: allIds } },
+      select: { testCaseId: true },
+    })
+    : [];
+  const existingIdSet = new Set(existingCases.map((tc) => tc.testCaseId));
+
+  let totalRows = 0;
+  let importableRows = 0;
+  let warningCount = 0;
+  let errorCount = 0;
+
+  const sheets = parsedSheets.map(({ sheetName, headerRow, headers, rows }) => {
+    const missingHeaders = REQUIRED_IMPORT_FIELDS.filter((field) => {
+      if (field === 'ID') return !headers.some((h) => ['ID', 'Test Case ID', 'testCaseId'].includes(h));
+      if (field === 'Test') return !headers.some((h) => ['Test', 'Test Action', 'testAction'].includes(h));
+      return !headers.includes(field);
+    });
+
+    const missingRequiredCounts = Object.fromEntries(REQUIRED_IMPORT_FIELDS.map((field) => [field, 0]));
+    const invalidStatusRows: number[] = [];
+    const duplicateIdsInFile: string[] = [];
+    const existingIds: string[] = [];
+
+    rows.forEach((row, index) => {
+      const id = getColValue(row, 'ID', 'Test Case ID', 'testCaseId');
+      const page = getColValue(row, 'Page', 'page');
+      const feature = getColValue(row, 'Feature', 'feature');
+      const test = getColValue(row, 'Test', 'Test Action', 'testAction');
+      const expectedResult = getColValue(row, 'Expected Result', 'expectedResult');
+      const statusRaw = getColValue(row, 'Status', 'status');
+      const actualResultRaw = getColValue(row, 'Actual Result', 'actualResult');
+      const status = normalizeImportStatus(statusRaw, actualResultRaw);
+
+      if (!id) missingRequiredCounts.ID++;
+      if (!page) missingRequiredCounts.Page++;
+      if (!feature) missingRequiredCounts.Feature++;
+      if (!test && !feature) missingRequiredCounts.Test++;
+      if (!expectedResult) missingRequiredCounts['Expected Result']++;
+      if (!statusRaw) missingRequiredCounts.Status++;
+      if (statusRaw && !VALID_IMPORT_STATUSES.has(status)) invalidStatusRows.push(index + 1);
+      if (id && (idCounts.get(id) || 0) > 1 && !duplicateIdsInFile.includes(id)) duplicateIdsInFile.push(id);
+      if (id && existingIdSet.has(id) && !existingIds.includes(id)) existingIds.push(id);
+    });
+
+    const sheetErrors = missingHeaders.length
+      + missingRequiredCounts.ID
+      + invalidStatusRows.length
+      + duplicateIdsInFile.length
+      + existingIds.length;
+    const sheetWarnings = missingRequiredCounts.Page
+      + missingRequiredCounts.Feature
+      + missingRequiredCounts.Test
+      + missingRequiredCounts['Expected Result']
+      + missingRequiredCounts.Status;
+
+    totalRows += rows.length;
+    errorCount += sheetErrors;
+    warningCount += sheetWarnings;
+    importableRows += rows.filter((row) => {
+      const id = getColValue(row, 'ID', 'Test Case ID', 'testCaseId');
+      return Boolean(id) && (idCounts.get(id) || 0) === 1 && !existingIdSet.has(id);
+    }).length;
+
+    const importableSheetRows = rows.filter((row) => {
+      const id = getColValue(row, 'ID', 'Test Case ID', 'testCaseId');
+      return Boolean(id) && (idCounts.get(id) || 0) === 1 && !existingIdSet.has(id);
+    }).length;
+
+    return {
+      sheet: sheetName,
+      moduleName: createModules ? sheetName : null,
+      headerRow,
+      totalRows: rows.length,
+      importableRows: importableSheetRows,
+      skippedEstimate: rows.length - importableSheetRows,
+      headers,
+      missingHeaders,
+      missingRequiredCounts,
+      duplicateIdsInFile,
+      existingIds,
+      invalidStatusRows,
+      previewRows: rows.slice(0, 5).map(buildPreviewRow),
+    };
+  });
+
+  return {
+    mode: 'preview',
+    canImport: errorCount === 0 && totalRows > 0,
+    totalSheets: workbook.SheetNames.length,
+    totalRows,
+    importableRows,
+    warningCount,
+    errorCount,
+    sheets,
+  };
+}
+
 // ============== IMPORT (POST) ==============
 export async function POST(req: NextRequest) {
   try {
@@ -79,12 +249,18 @@ export async function POST(req: NextRequest) {
     const file = formData.get('file') as File;
     const projectId = formData.get('projectId') as string;
     const createModules = formData.get('createModules') === 'true';
+    const mode = String(formData.get('mode') || 'import');
 
     if (!file) return NextResponse.json({ error: 'No file provided' }, { status: 400 });
     if (!projectId) return NextResponse.json({ error: 'Project ID is required' }, { status: 400 });
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const workbook = XLSX.read(buffer, { type: 'buffer' });
+
+    if (mode === 'preview') {
+      const preview = await buildImportPreview(workbook, projectId, createModules);
+      return NextResponse.json(preview);
+    }
 
     let totalImported = 0;
     const sheetResults: { sheet: string; imported: number; skipped: number; moduleId?: string }[] = [];
@@ -200,8 +376,8 @@ export async function POST(req: NextRequest) {
             status = 'FAILED';
           } else if (lower === 'ready to retest') {
             status = 'READY TO RETEST';
-          } else if (lower === 'tbh' || lower === 'to be honed' || lower === 'tbd' || lower === 'to be determined') {
-            status = 'TBH';
+          } else if (lower === 'tba' || lower === 'to be announced' || lower === 'tbd' || lower === 'to be determined') {
+            status = 'TBA';
           } else if (lower === 'not done' || lower === 'not done yet' || lower === 'todo') {
             status = 'NOT DONE';
           }

@@ -1,6 +1,10 @@
 import { db } from '@/lib/db';
 import { NextRequest, NextResponse } from 'next/server';
-import ZAI from 'z-ai-web-dev-sdk';
+import Groq from 'groq-sdk';
+
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY,
+});
 
 interface GeneratedTestCase {
   testCaseId: string;
@@ -18,39 +22,52 @@ interface GeneratedTestCase {
 // Set max duration for this API route (Vercel/Next.js)
 export const maxDuration = 60;
 
+const AI_MODEL = process.env.GROQ_GENERATE_MODEL || process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
+const MAX_CONTEXT_CASES = 12;
+const MAX_CONTEXT_LINES = 4;
+const MAX_OUTPUT_TOKENS = 1800;
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { projectId, userPrompt, moduleFilter } = body;
+    const requestedCount = Math.min(Math.max(Number(body.count || 4), 1), 8);
 
     if (!projectId) return NextResponse.json({ error: 'Project ID is required' }, { status: 400 });
     if (!userPrompt) return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
 
-    // Fetch a smaller set of test cases for context (reduced for performance)
     const existingTestCases = await db.testCase.findMany({
       where: {
         projectId,
         ...(moduleFilter && moduleFilter !== 'all' ? { moduleId: moduleFilter } : {}),
       },
-      include: { module: true },
+      select: {
+        testCaseId: true,
+        page: true,
+        subMenu: true,
+        testType: true,
+        testAction: true,
+        priority: true,
+      },
       orderBy: { testCaseId: 'asc' },
-      take: 30,
+      take: MAX_CONTEXT_CASES,
     });
 
     // Fetch modules for the project
     const projectModules = await db.module.findMany({
       where: { projectId },
     });
+    const selectedModuleId = moduleFilter && moduleFilter !== 'all' ? String(moduleFilter) : null;
+    const idSequence = await getNextIdSequence(projectId, selectedModuleId, requestedCount);
 
-    // Build a compact context from existing test cases
-    const contextSummary = buildContext(existingTestCases, projectModules);
+    // Build context
+    const contextSummary = buildContext(existingTestCases, idSequence);
 
-    // Create a more compact system prompt
     const systemPrompt = `You are a QA Tester assistant. Generate test cases for web/mobile apps.
-Respond with ONLY a valid JSON array. No markdown, no explanation.
+Respond with ONLY a valid JSON object containing a "test_cases" array.
 
-Each object must have:
-- testCaseId: string (follow existing pattern like "A-005")
+Each test case object must have:
+- testCaseId: string (use the provided next IDs exactly, in order)
 - page: string (page being tested)
 - subMenu: string (sub-section or "")
 - weight: string (e.g. "5%", "10%", or "")
@@ -59,105 +76,52 @@ Each object must have:
 - steps: string (detailed steps using \\n for line breaks, prefixed with "- ", in Indonesian)
 - expectedResult: string (in Indonesian)
 - priority: "Critical" | "High" | "Medium" | "Low"
-- moduleId: string or null (from available modules)
+- moduleId: string or null (match ID from provided modules)
 
-JSON RULES:
-1. Use \\n for line breaks in "steps", NOT actual newlines
-2. No trailing commas
-3. Must be parseable by JSON.parse()
-
-Generate 3-12 test cases. Write testAction, steps, expectedResult in Indonesian.`;
+Generate exactly ${requestedCount} high-value test cases. Write testAction, steps, expectedResult in Indonesian.`;
 
     const userMessage = `Context:
 ${contextSummary}
 
-Modules: ${projectModules.map(m => `${m.name}(id:${m.id})`).join(', ')}
+Next testCaseId values to use exactly in order: ${idSequence.nextIds.join(', ')}
+Available Modules (Use IDs only): ${projectModules.map(m => `${m.name}(id:${m.id})`).join(', ')}
 
-Request: ${userPrompt}
+User Request: ${userPrompt}
 
-JSON array only:`;
-
-    // Call AI with timeout protection
-    const zai = await ZAI.create();
+Return JSON with "test_cases" key:`;
 
     let completion;
     try {
-      completion = await zai.chat.completions.create({
+      completion = await groq.chat.completions.create({
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage },
         ],
-        temperature: 0.7,
-        max_tokens: 3000,
+        model: AI_MODEL,
+        temperature: 0.4,
+        max_tokens: MAX_OUTPUT_TOKENS,
+        response_format: { type: "json_object" }
       });
     } catch (aiError: unknown) {
-      console.error('AI SDK call failed:', aiError);
-      const errMsg = aiError instanceof Error ? aiError.message : 'Unknown AI error';
+      console.error('Groq API call failed:', aiError);
       return NextResponse.json({
-        error: `AI service error: ${errMsg}. Silakan coba lagi.`,
+        error: `Groq service error. Silakan coba lagi.`,
       }, { status: 502 });
     }
 
-    const aiResponse = completion.choices[0]?.message?.content || '';
-
-    // Parse the AI response
-    let generatedCases: GeneratedTestCase[] = [];
-    try {
-      let jsonStr = aiResponse.trim();
-      // Remove markdown code block if present
-      if (jsonStr.startsWith('```')) {
-        jsonStr = jsonStr.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
-      }
-
-      // Try direct parse first
-      try {
-        generatedCases = JSON.parse(jsonStr);
-      } catch {
-        // Try to extract JSON array
-        const arrayMatch = jsonStr.match(/\[[\s\S]*\]/);
-        if (arrayMatch) {
-          let fixed = arrayMatch[0];
-          // Fix unescaped newlines in string values
-          fixed = fixed.replace(/"steps"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,/g, (match) => {
-            return match.replace(/\n/g, '\\n');
-          });
-          fixed = fixed.replace(/\n(?=\s*- )/g, '\\n');
-          try {
-            generatedCases = JSON.parse(fixed);
-          } catch {
-            // More aggressive fix: escape raw newlines within string values
-            const lines = fixed.split('\n');
-            const rebuilt: string[] = [];
-            let inString = false;
-            for (const line of lines) {
-              const quotes = (line.match(/(?<!\\)"/g) || []).length;
-              if (quotes % 2 === 1) inString = !inString;
-              if (inString) {
-                rebuilt.push(line.replace(/"/g, '\\"') + '\\n');
-              } else {
-                rebuilt.push(line);
-              }
-            }
-            generatedCases = JSON.parse(rebuilt.join('\n'));
-          }
-        }
-      }
-    } catch {
-      console.error('Failed to parse AI response:', aiResponse.substring(0, 500));
-      return NextResponse.json({
-        error: 'AI menghasilkan format yang tidak valid. Silakan coba lagi.',
-      }, { status: 422 });
-    }
+    const aiResponse = completion.choices[0]?.message?.content || '{}';
+    const parsed = JSON.parse(aiResponse);
+    const generatedCases: GeneratedTestCase[] = parsed.test_cases || [];
 
     if (!Array.isArray(generatedCases) || generatedCases.length === 0) {
       return NextResponse.json({
-        error: 'AI tidak berhasil menghasilkan test case. Silakan coba lagi dengan prompt yang lebih spesifik.',
+        error: 'AI tidak berhasil menghasilkan test case.',
       }, { status: 422 });
     }
 
-    // Validate and clean the generated cases
-    const cleanedCases = generatedCases.map((tc) => ({
-      testCaseId: String(tc.testCaseId || ''),
+    // Validate and clean
+    const cleanedCases = generatedCases.slice(0, requestedCount).map((tc, index) => ({
+      testCaseId: idSequence.nextIds[index] || String(tc.testCaseId || ''),
       page: String(tc.page || ''),
       subMenu: String(tc.subMenu || ''),
       weight: String(tc.weight || ''),
@@ -166,59 +130,80 @@ JSON array only:`;
       steps: String(tc.steps || ''),
       expectedResult: String(tc.expectedResult || ''),
       priority: ['Critical', 'High', 'Medium', 'Low'].includes(tc.priority) ? tc.priority : 'Medium',
-      moduleId: tc.moduleId && projectModules.some(m => m.id === tc.moduleId) ? tc.moduleId : null,
+      moduleId: selectedModuleId || (tc.moduleId && projectModules.some(m => m.id === tc.moduleId) ? tc.moduleId : null),
     })).filter(tc => tc.testCaseId && tc.page && tc.testAction);
 
     return NextResponse.json({ generated: cleanedCases });
   } catch (error) {
     console.error('POST /api/ai error:', error);
-    const msg = error instanceof Error ? error.message : 'Unknown error';
-    return NextResponse.json({ error: `Gagal generate test case: ${msg}` }, { status: 500 });
+    return NextResponse.json({ error: 'Gagal generate test case' }, { status: 500 });
   }
 }
 
-function buildContext(existingTestCases: TestCaseWithModule[], modules: { id: string; name: string }[]): string {
-  if (existingTestCases.length === 0) {
-    return 'No existing test cases. Empty project.';
-  }
-
-  const lines: string[] = [];
-  lines.push(`Total TCs: ${existingTestCases.length}`);
-  lines.push(`Modules: ${modules.map(m => m.name).join(', ')}`);
-
-  // Show only 8 representative test cases (compact)
-  const shown = new Set<string>();
-  let count = 0;
-  for (const tc of existingTestCases) {
-    if (count >= 8) break;
-    const key = `${tc.testCaseId}-${tc.testAction}`;
-    if (shown.has(key)) continue;
-    shown.add(key);
-    lines.push(`[${tc.testCaseId}] ${tc.page}>${tc.subMenu || '-'} ${tc.testType} ${tc.priority} | ${tc.testAction}`);
-    lines.push(`  Steps: ${tc.steps.substring(0, 100)}${tc.steps.length > 100 ? '...' : ''}`);
-    count++;
-  }
-
-  // Summarize patterns (compact)
-  const pages = [...new Set(existingTestCases.map(tc => tc.page))];
-  const idPattern = existingTestCases[0]?.testCaseId?.match(/^[A-Z]+-/)?.[0] || 'A-';
-  lines.push(`Pages: ${pages.join(', ')}`);
-  lines.push(`ID pattern: ${idPattern}XXX`);
-
-  return lines.join('\n');
+interface IdSequence {
+  prefix: string;
+  width: number;
+  lastNumber: number;
+  nextIds: string[];
 }
 
-interface TestCaseWithModule {
+async function getNextIdSequence(projectId: string, moduleId: string | null, count: number): Promise<IdSequence> {
+  const testCases = await db.testCase.findMany({
+    where: {
+      projectId,
+      ...(moduleId ? { moduleId } : {}),
+    },
+    select: { testCaseId: true },
+  });
+
+  let prefix = 'A-';
+  let width = 3;
+  let lastNumber = 0;
+
+  for (const testCase of testCases) {
+    const parsed = parseTestCaseId(testCase.testCaseId);
+    if (!parsed) continue;
+    if (parsed.number > lastNumber) {
+      prefix = parsed.prefix;
+      width = parsed.width;
+      lastNumber = parsed.number;
+    }
+  }
+
+  const nextIds = Array.from({ length: count }, (_, index) => {
+    const nextNumber = lastNumber + index + 1;
+    return `${prefix}${String(nextNumber).padStart(width, '0')}`;
+  });
+
+  return { prefix, width, lastNumber, nextIds };
+}
+
+function parseTestCaseId(value: string) {
+  const match = value.match(/^(.+?-)(\d+)$/);
+  if (!match) return null;
+  return {
+    prefix: match[1],
+    number: Number(match[2]),
+    width: match[2].length,
+  };
+}
+
+function buildContext(existingTestCases: Array<{
   testCaseId: string;
   page: string;
   subMenu: string | null;
-  weight: string | null;
   testType: string;
   testAction: string;
-  steps: string;
-  expectedResult: string;
-  status: string;
   priority: string;
-  moduleId: string | null;
-  module: { name: string } | null;
+}>, idSequence: IdSequence): string {
+  if (existingTestCases.length === 0) return 'Empty project.';
+  
+  const lines: string[] = [];
+  existingTestCases.slice(0, MAX_CONTEXT_LINES).forEach(tc => {
+    lines.push(`[${tc.testCaseId}] ${tc.page}${tc.subMenu ? ` > ${tc.subMenu}` : ''} | ${tc.testType} | ${tc.priority} | ${tc.testAction}`);
+  });
+  
+  lines.push(`Last numeric testCaseId in selected scope: ${idSequence.prefix}${String(idSequence.lastNumber).padStart(idSequence.width, '0')}`);
+  
+  return lines.join('\n');
 }
