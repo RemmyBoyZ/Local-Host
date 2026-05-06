@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import Groq from 'groq-sdk';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
@@ -13,10 +14,20 @@ export const maxDuration = 60;
 const MAX_FIELD_CHARS = 2500;
 const MAX_EXECUTION_LOG_CHARS = 4500;
 const MAX_EXTRA_LOG_CHARS = 5500;
+const MAX_VISUAL_EVIDENCE_CHARS = 1800;
 const MAX_PROMPT_CHARS = 11000;
 const RETRY_PROMPT_CHARS = 6500;
 const MAX_COMPLETION_TOKENS = 700;
 const IMPORTANT_LOG_PATTERN = /error|failed|failure|exception|timeout|severe|warn|warning|status["': ]+(4|5)\d\d|"\s*success\s*"\s*:\s*false|success[:= ]+false/i;
+const SETUP_CLEANUP_PATTERN = /setup|cleanup|clear[-_\s]?session|reset|remove|delete|logout|pre[-_\s]?condition|precondition|tear[-_\s]?down|teardown/i;
+const STATIC_NOISE_PATTERN = /\/_next\/|\/assets\/|\/public\/|\/media\/|\/images\/|\/cdn-cgi\/rum|\.(js|css|png|jpe?g|svg|gif|webp|ico|woff2?|ttf|map)(\?|$)|data:image|blob:/i;
+const PASS_EVIDENCE_PATTERN = /passed|success|succeed|berhasil|as expected|status["': ]+20[01]|status=20[01]|"\s*success\s*"\s*:\s*true|success[:= ]+true/i;
+const FAIL_EVIDENCE_PATTERN = /assertion.*fail|verification.*fail|not as expected|expected.*but|actual.*failed|test failed|severe|exception|uncaught|timeout/i;
+const GEMINI_VISION_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash';
+const RUNTIME_DIR = process.env.QA_RUNTIME_DIR
+  || path.join(process.env.LOCALAPPDATA || os.tmpdir(), 'web-qa-runtime');
+const RECORDINGS_DIR = path.join(RUNTIME_DIR, 'recordings');
+const LEGACY_RECORDINGS_DIR = path.join(process.cwd(), 'mini-services', 'recordings');
 
 type SummaryRecord = {
   id: string;
@@ -28,6 +39,28 @@ type SummaryRecord = {
   expectedResult: string;
   actualResult: string | null;
   status: string;
+};
+
+type ClassifiedLog = {
+  category: 'setup_cleanup' | 'non_blocking_error' | 'critical_error' | 'final_evidence' | 'pass_evidence' | 'general';
+  line: string;
+  score: number;
+  index: number;
+};
+
+type RecordingFrame = {
+  file: string;
+  relativeMs: number;
+  timestamp?: string;
+  url?: string;
+};
+
+type RecordingMetadata = {
+  sessionId: string;
+  testCaseId: string;
+  targetUrl?: string | null;
+  startedAt?: string;
+  frames: RecordingFrame[];
 };
 
 function limitText(value: string | null | undefined, maxChars: number) {
@@ -64,6 +97,217 @@ function compactLogLine(line: string) {
     return limitText(compacted || trimmed, 500);
   } catch {
     return limitText(trimmed, 500);
+  }
+}
+
+function getLogStatus(line: string) {
+  const match = line.match(/status(?:["':=\s]+)(\d{3})/i);
+  return match ? Number(match[1]) : null;
+}
+
+function classifyCompactLine(line: string, index: number, total: number): ClassifiedLog {
+  const status = getLogStatus(line);
+  const isLate = total > 0 && index >= Math.floor(total * 0.85);
+  const isSetupCleanup = SETUP_CLEANUP_PATTERN.test(line);
+  const isStaticNoise = STATIC_NOISE_PATTERN.test(line);
+  const hasFailureSignal = IMPORTANT_LOG_PATTERN.test(line) || FAIL_EVIDENCE_PATTERN.test(line);
+  const hasPassSignal = PASS_EVIDENCE_PATTERN.test(line);
+  const isHttpError = typeof status === 'number' && status >= 400;
+
+  if (isLate || hasPassSignal) {
+    return { category: hasPassSignal ? 'pass_evidence' : 'final_evidence', line, score: hasPassSignal ? 90 : 75, index };
+  }
+
+  if ((isSetupCleanup || isStaticNoise) && (isHttpError || hasFailureSignal)) {
+    return { category: 'non_blocking_error', line, score: 45, index };
+  }
+
+  if (isSetupCleanup || isStaticNoise) {
+    return { category: 'setup_cleanup', line, score: 20, index };
+  }
+
+  if (hasFailureSignal || isHttpError) {
+    return { category: 'critical_error', line, score: 85, index };
+  }
+
+  return { category: 'general', line, score: 35, index };
+}
+
+function formatClassifiedLogs(rawLogs: string, maxChars: number) {
+  const lines = rawLogs
+    .split('\n')
+    .map(compactLogLine)
+    .filter(Boolean);
+
+  if (!lines.length) return '';
+
+  const classified = lines.map((line, index) => classifyCompactLine(line, index, lines.length));
+  const byCategory = (category: ClassifiedLog['category'], limit: number) => (
+    classified
+      .filter(item => item.category === category)
+      .sort((a, b) => (b.score - a.score) || (b.index - a.index))
+      .slice(0, limit)
+      .sort((a, b) => a.index - b.index)
+      .map(item => item.line)
+  );
+
+  const sections = [
+    ['FINAL / LATE EVIDENCE', [...byCategory('final_evidence', 18), ...byCategory('pass_evidence', 16)]],
+    ['CRITICAL ERROR CANDIDATES', byCategory('critical_error', 28)],
+    ['NON-BLOCKING SETUP/CLEANUP NOISE', byCategory('non_blocking_error', 18)],
+    ['SETUP/CLEANUP OR STATIC NOISE', byCategory('setup_cleanup', 12)],
+    ['RECENT GENERAL LOGS', classified.slice(-28).map(item => item.line)],
+  ]
+    .filter(([, items]) => Array.isArray(items) && items.length > 0)
+    .map(([title, items]) => `## ${title}\n${Array.from(new Set(items as string[])).join('\n')}`);
+
+  return limitText(sections.join('\n\n'), maxChars);
+}
+
+function getRecordingMetadataCandidates(testCaseIds: string[]) {
+  const metadataItems: Array<{ metadataPath: string; mtimeMs: number }> = [];
+  const roots = [RECORDINGS_DIR, LEGACY_RECORDINGS_DIR];
+
+  for (const root of roots) {
+    for (const testCaseId of testCaseIds) {
+      const testCaseDir = path.join(root, encodeURIComponent(testCaseId));
+      if (!fs.existsSync(testCaseDir)) continue;
+
+      const sessionDirs = fs.readdirSync(testCaseDir, { withFileTypes: true })
+        .filter(entry => entry.isDirectory())
+        .map(entry => path.join(testCaseDir, entry.name));
+
+      for (const sessionDir of sessionDirs) {
+        const metadataPath = path.join(sessionDir, 'metadata.json');
+        if (!fs.existsSync(metadataPath)) continue;
+        metadataItems.push({ metadataPath, mtimeMs: fs.statSync(metadataPath).mtimeMs });
+      }
+    }
+  }
+
+  return metadataItems.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+function readLatestRecording(testCaseIds: string[]) {
+  for (const item of getRecordingMetadataCandidates(testCaseIds)) {
+    try {
+      const metadata = JSON.parse(fs.readFileSync(item.metadataPath, 'utf8')) as RecordingMetadata;
+      if (!metadata.frames?.length) continue;
+      return {
+        metadata,
+        metadataPath: item.metadataPath,
+        framesDir: path.join(path.dirname(item.metadataPath), 'frames'),
+      };
+    } catch (_) {}
+  }
+
+  return null;
+}
+
+function extractImportantRelativeTimes(rawLogs: string) {
+  return rawLogs
+    .split('\n')
+    .map(line => {
+      try {
+        const parsed = JSON.parse(line);
+        const compacted = compactLogLine(line);
+        if (!IMPORTANT_LOG_PATTERN.test(compacted) && !PASS_EVIDENCE_PATTERN.test(compacted)) return null;
+        return typeof parsed.relativeMs === 'number' ? parsed.relativeMs : null;
+      } catch {
+        return null;
+      }
+    })
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+}
+
+function pickVisualFrames(frames: RecordingFrame[], importantTimes: number[]) {
+  if (!frames.length) return [];
+
+  const sortedFrames = [...frames].sort((a, b) => a.relativeMs - b.relativeMs);
+  const targetTimes = [
+    sortedFrames[0].relativeMs,
+    sortedFrames[Math.floor(sortedFrames.length * 0.35)]?.relativeMs,
+    sortedFrames[Math.floor(sortedFrames.length * 0.7)]?.relativeMs,
+    ...importantTimes.slice(-3),
+    sortedFrames[sortedFrames.length - 1].relativeMs,
+  ].filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+
+  const selected = targetTimes.map(target => (
+    sortedFrames.reduce((closest, frame) => (
+      Math.abs(frame.relativeMs - target) < Math.abs(closest.relativeMs - target) ? frame : closest
+    ), sortedFrames[0])
+  ));
+
+  return Array.from(new Map(selected.map(frame => [frame.file, frame])).values()).slice(0, 8);
+}
+
+function formatRelativeTime(relativeMs?: number) {
+  if (typeof relativeMs !== 'number') return '-';
+  const totalSeconds = Math.floor(Math.max(0, relativeMs) / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+async function createVisualEvidence(testCaseIds: string[], rawLogs: string) {
+  if (!process.env.GEMINI_API_KEY) return '';
+
+  const latestRecording = readLatestRecording(testCaseIds);
+  if (!latestRecording) return '';
+
+  const frames = pickVisualFrames(latestRecording.metadata.frames, extractImportantRelativeTimes(rawLogs));
+  if (!frames.length) return '';
+
+  const parts: Array<{ text: string } | { inline_data: { mime_type: string; data: string } }> = [{
+    text: `Analisis frame screen recording QA berikut. Untuk setiap frame, jelaskan UI/state yang terlihat dan apakah ada bukti expected result tercapai atau error visual. Jawab singkat dalam bahasa Indonesia dengan format bullet "mm:ss - observasi". Target URL: ${latestRecording.metadata.targetUrl || '-'}`,
+  }];
+
+  for (const frame of frames) {
+    const framePath = path.join(latestRecording.framesDir, frame.file);
+    if (!fs.existsSync(framePath)) continue;
+    parts.push({ text: `Frame ${formatRelativeTime(frame.relativeMs)}:` });
+    parts.push({
+      inline_data: {
+        mime_type: 'image/jpeg',
+        data: fs.readFileSync(framePath).toString('base64'),
+      },
+    });
+  }
+
+  if (parts.length <= 1) return '';
+
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_VISION_MODEL}:generateContent`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': process.env.GEMINI_API_KEY,
+      },
+      body: JSON.stringify({
+        contents: [{ parts }],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 450,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      console.warn(`[AI Summary] Gemini visual evidence skipped: ${response.status} ${limitText(text, 300)}`);
+      return '';
+    }
+
+    const payload = await response.json();
+    const text = payload?.candidates?.[0]?.content?.parts
+      ?.map((part: { text?: string }) => part.text)
+      .filter(Boolean)
+      .join('\n');
+
+    return text ? limitText(text, MAX_VISUAL_EVIDENCE_CHARS) : '';
+  } catch (error: any) {
+    console.warn(`[AI Summary] Gemini visual evidence failed: ${error.message}`);
+    return '';
   }
 }
 
@@ -192,14 +436,15 @@ export async function POST(req: NextRequest) {
     console.log(`[AI Summary] Berhasil menemukan ${recordType}: ${tc.testCaseId} (${tc.id})`);
 
     // 1. Ambil logs dari database (execution logs)
-    const executionLogs = compactLogs(tc.stepLogs || 'No execution logs found.', MAX_EXECUTION_LOG_CHARS);
+    const executionLogs = formatClassifiedLogs(tc.stepLogs || 'No execution logs found.', MAX_EXECUTION_LOG_CHARS);
 
     // 2. Ambil logs dari file system (console & network)
     let extraLogs = "";
+    let rawExtraLogs = "";
+    const logCandidates = Array.from(new Set([requestedId, tc.id, tc.testCaseId].filter(Boolean)));
     try {
       // Gunakan path absolute yang lebih aman
       const logsDir = path.join(process.cwd(), 'mini-services', 'logs');
-      const logCandidates = Array.from(new Set([requestedId, tc.id, tc.testCaseId].filter(Boolean)));
       
       console.log(`[AI Summary] Mencari log untuk kandidat ID: ${logCandidates.join(', ')}`);
 
@@ -210,10 +455,9 @@ export async function POST(req: NextRequest) {
       if (foundLogPath) {
         const fileContent = fs.readFileSync(foundLogPath, 'utf8');
         const lines = fileContent.split('\n').filter(l => l.trim());
-        const importantLines = lines.filter(line => IMPORTANT_LOG_PATTERN.test(line));
-        const selectedLines = Array.from(new Set([...importantLines.slice(-80), ...lines.slice(-80)]));
-        extraLogs = compactLogs(selectedLines.join('\n'), MAX_EXTRA_LOG_CHARS);
-        console.log(`[AI Summary] Berhasil memadatkan ${selectedLines.length} dari ${lines.length} baris log tambahan: ${foundLogPath}`);
+        rawExtraLogs = lines.join('\n');
+        extraLogs = formatClassifiedLogs(lines.join('\n'), MAX_EXTRA_LOG_CHARS);
+        console.log(`[AI Summary] Berhasil mengklasifikasi ${lines.length} baris log tambahan: ${foundLogPath}`);
       } else {
         console.warn(`[AI Summary] File current log tidak ditemukan untuk kandidat: ${logCandidates.join(', ')}`);
       }
@@ -221,16 +465,23 @@ export async function POST(req: NextRequest) {
       console.error('[AI Summary] Error saat membaca file log:', err.message);
     }
 
-    const systemPrompt = `You are a Senior QA Automation Analyst. Your task is to summarize the results of an automated test.
-Analyze the provided Test Case Requirements (Steps & Expected Result) and compare them with the actual Automation Logs (Execution, Console, and Network).
+    const visualEvidence = await createVisualEvidence(logCandidates, rawExtraLogs);
 
-Focus on:
-1. SUCCESS/FAILURE: Did the test reach the expected result?
-2. BUGS/ERRORS: Identify any specific errors (JS errors, API failures, or logic errors).
-3. NETWORK: Mention any critical API calls that failed or took too long.
-4. RECOMMENDATION: Brief advice on what to fix if it failed.
+    const systemPrompt = `You are a Senior QA Automation Analyst. Summarize an automated/manual QA test result using Indonesian.
 
-Keep the summary professional, structured (using bullet points), and concise. Use Indonesian language for the summary.`;
+Decision rules:
+1. The expected result and final state are the primary judge. If late/final evidence shows the expected result was reached, mark it as PASS or PASS WITH WARNING.
+2. Do not fail a test only because setup/cleanup/precondition logs contain 400/404/409, especially clear-session, reset, delete, remove, logout, or cleanup. Treat those as non-blocking unless the main flow stops afterward.
+3. Static assets, telemetry, preflight, Cloudflare RUM, data URLs, and browser noise are not business failures.
+4. A 4xx/5xx is critical only when it belongs to the main business flow or contradicts the Expected Result.
+5. If evidence is mixed, explain the uncertainty and cite the strongest final evidence.
+6. If VISUAL EVIDENCE exists, use it as strong evidence for UI final state, but do not invent details not visible in the evidence.
+
+Output format:
+- Kesimpulan: PASS / FAIL / PASS WITH WARNING / INCONCLUSIVE plus one short reason.
+- Evidence Utama: bullets with the most relevant final/main-flow proof.
+- Error/Warning Diabaikan: setup/cleanup/noise that should not decide failure.
+- Risiko atau Rekomendasi: concise next action if needed.`;
 
     const userMessage = `TEST CASE DETAILS:
 Record Type: ${recordType}
@@ -243,11 +494,14 @@ Steps: ${limitText(tc.steps, MAX_FIELD_CHARS)}
 Expected: ${limitText(tc.expectedResult, MAX_FIELD_CHARS)}
 Actual: ${limitText(tc.actualResult || 'No actual result recorded.', MAX_FIELD_CHARS)}
 
-AUTOMATION LOGS (EXECUTION):
+CLASSIFIED AUTOMATION LOGS (EXECUTION):
 ${executionLogs}
 
-AUTOMATION LOGS (CDP - CONSOLE & NETWORK):
-${extraLogs || 'No CDP logs recorded.'}`;
+CLASSIFIED AUTOMATION LOGS (CDP - CONSOLE & NETWORK):
+${extraLogs || 'No CDP logs recorded.'}
+
+VISUAL EVIDENCE (KEY FRAMES):
+${visualEvidence || 'No visual evidence available.'}`;
 
     const compactUserMessage = limitText(userMessage, MAX_PROMPT_CHARS);
     console.log(`[AI Summary] Prompt size: system=${systemPrompt.length} chars, user=${compactUserMessage.length} chars`);

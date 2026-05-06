@@ -32,6 +32,9 @@ export interface AutomationLogEntry {
 export interface ManualRecordingFrame {
   file: string;
   relativeMs: number;
+  capturedAtMs?: number;
+  captureDurationMs?: number;
+  reason?: string;
   timestamp: string;
   url: string;
 }

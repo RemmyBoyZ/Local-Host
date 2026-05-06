@@ -324,7 +324,6 @@ export default function TestCaseManager() {
     generateAISummary,
     loadLogHistory,
     filterConsoleLogs,
-    filterNetworkLogs,
   } = useAutomationLogs({ viewTestCase, setViewTestCase });
 
   const visibleBugFixItems = useMemo(
@@ -1241,7 +1240,6 @@ export default function TestCaseManager() {
         generateAISummary={generateAISummary}
         loadLogHistory={loadLogHistory}
         filterConsoleLogs={filterConsoleLogs}
-        filterNetworkLogs={filterNetworkLogs}
         getStatusColor={getStatusColor}
         getStatusIcon={getStatusIcon}
         getTestTypeColor={getTestTypeColor}

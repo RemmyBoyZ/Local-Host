@@ -139,8 +139,32 @@ function isStoppedManualLog(logData) {
 }
 
 function getRelativeMs(session) {
+  if (session?.startedAtHrNs) {
+    const elapsedNs = process.hrtime.bigint() - BigInt(session.startedAtHrNs);
+    return Math.max(0, Number(elapsedNs / 1000000n));
+  }
+
   const startedAtMs = Number(session?.startedAtMs || new Date(session?.startedAt || 0).getTime());
   return Number.isFinite(startedAtMs) && startedAtMs > 0 ? Math.max(0, Date.now() - startedAtMs) : 0;
+}
+
+function getRelativeMsFromWallTime(session, wallTimeMs) {
+  const startedAtMs = Number(session?.startedAtMs || new Date(session?.startedAt || 0).getTime());
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(wallTimeMs)) return getRelativeMs(session);
+  return Math.max(0, Math.round(wallTimeMs - startedAtMs));
+}
+
+function getRelativeMsFromCdpTimestamp(session, cdpTimestampSeconds) {
+  const cdpTimestampMs = Number(cdpTimestampSeconds) * 1000;
+  const offsetMs = Number(session?.cdpTimeOffsetMs);
+  if (!Number.isFinite(cdpTimestampMs) || !Number.isFinite(offsetMs)) return getRelativeMs(session);
+  return getRelativeMsFromWallTime(session, cdpTimestampMs + offsetMs);
+}
+
+function syncCdpClock(session, cdpTimestampSeconds) {
+  const cdpTimestampMs = Number(cdpTimestampSeconds) * 1000;
+  if (!Number.isFinite(cdpTimestampMs) || session.cdpTimeOffsetMs) return;
+  session.cdpTimeOffsetMs = Date.now() - cdpTimestampMs;
 }
 
 function truncateText(value, maxLength = 4000) {
@@ -341,7 +365,14 @@ function writeRecordingMetadata(recording) {
 }
 
 function startFrameRecorder(session, cdp, targetUrl) {
-  const frameIntervalMs = 750;
+  const configuredInterval = Number(process.env.QA_RECORDING_INTERVAL_MS);
+  const frameIntervalMs = Number.isFinite(configuredInterval)
+    ? Math.min(1000, Math.max(150, configuredInterval))
+    : 300;
+  const configuredQuality = Number(process.env.QA_RECORDING_JPEG_QUALITY);
+  const jpegQuality = Number.isFinite(configuredQuality)
+    ? Math.min(80, Math.max(35, configuredQuality))
+    : 52;
   const paths = getRecordingPaths(session.testCaseId, session.sessionId);
   fs.mkdirSync(paths.framesDir, { recursive: true });
 
@@ -358,42 +389,108 @@ function startFrameRecorder(session, cdp, targetUrl) {
     timer: null,
     paths,
     capturing: false,
+    pendingCapture: false,
+    lastCaptureStartedAt: 0,
+    lastNetworkActivityAt: Date.now(),
   };
 
-  const captureFrame = async () => {
+  const waitForPageSettled = async () => {
+    const maxWaitMs = 1200;
+    const quietWindowMs = 250;
+    const deadline = Date.now() + maxWaitMs;
+
+    while (Date.now() < deadline) {
+      const quietEnough = Date.now() - recording.lastNetworkActivityAt >= quietWindowMs;
+      try {
+        const result = await cdp.send('Runtime.evaluate', {
+          expression: `(() => {
+            const state = document.readyState;
+            const pendingImages = Array.from(document.images || []).filter(img => !img.complete).length;
+            const fontsReady = !document.fonts || document.fonts.status === 'loaded';
+            return { state, pendingImages, fontsReady };
+          })()`,
+          returnByValue: true,
+        });
+        const value = result?.result?.value || {};
+        if (quietEnough && value.state === 'complete' && value.pendingImages === 0 && value.fontsReady) return;
+      } catch (_) {
+        if (quietEnough) return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  };
+
+  const captureFrame = async (reason = 'interval') => {
     const currentSession = getManualSession(session.sessionId);
-    if (!currentSession?.active || recording.capturing) return;
+    if (!currentSession?.active) return;
+    if (recording.capturing) {
+      recording.pendingCapture = true;
+      return;
+    }
 
     recording.capturing = true;
+    recording.pendingCapture = false;
+    await waitForPageSettled();
+    if (!getManualSession(session.sessionId)?.active) {
+      recording.capturing = false;
+      return;
+    }
+    const captureStartedRelativeMs = getRelativeMs(currentSession);
+    const captureStartedAt = Date.now();
+    recording.lastCaptureStartedAt = captureStartedAt;
     try {
       const result = await cdp.send('Page.captureScreenshot', {
         format: 'jpeg',
-        quality: 48,
+        quality: jpegQuality,
         captureBeyondViewport: false,
       });
       if (!result?.data) return;
+      if (!getManualSession(session.sessionId)?.active) return;
 
+      const captureEndedRelativeMs = getRelativeMs(currentSession);
+      const relativeMs = Math.round((captureStartedRelativeMs + captureEndedRelativeMs) / 2);
       recording.frameIndex += 1;
       const file = `${String(recording.frameIndex).padStart(6, '0')}.jpg`;
       fs.writeFileSync(path.join(paths.framesDir, file), Buffer.from(result.data, 'base64'));
       recording.frames.push({
         file,
-        relativeMs: getRelativeMs(currentSession),
+        relativeMs,
+        capturedAtMs: captureEndedRelativeMs,
+        captureDurationMs: Math.max(0, captureEndedRelativeMs - captureStartedRelativeMs),
+        reason,
         timestamp: new Date().toISOString(),
       });
 
-      if (recording.frames.length % 8 === 0) writeRecordingMetadata(recording);
+      if (recording.frames.length % 5 === 0) writeRecordingMetadata(recording);
     } catch (error) {
       if (getManualSession(session.sessionId)?.active) {
         console.warn('Manual recording frame skipped:', error.message);
       }
     } finally {
       recording.capturing = false;
+      if (recording.pendingCapture && getManualSession(session.sessionId)?.active) {
+        setTimeout(() => captureFrame('event-followup'), 80);
+      }
     }
   };
 
+  recording.captureNow = (reason = 'event') => {
+    if (!getManualSession(session.sessionId)?.active) return;
+    if (recording.capturing) {
+      recording.pendingCapture = true;
+      return;
+    }
+    const elapsedSinceLastCapture = Date.now() - recording.lastCaptureStartedAt;
+    if (elapsedSinceLastCapture < 120) {
+      recording.pendingCapture = true;
+      setTimeout(() => captureFrame(reason), 120 - elapsedSinceLastCapture);
+      return;
+    }
+    setTimeout(() => captureFrame(reason), 0);
+  };
+
   recording.timer = setInterval(captureFrame, frameIntervalMs);
-  setTimeout(captureFrame, 500);
+  setTimeout(() => captureFrame('initial'), 100);
   writeRecordingMetadata(recording);
   return recording;
 }
@@ -494,9 +591,14 @@ async function startCdpCapture(session, targetUrl) {
     if (!message.method) return;
     const currentSession = getManualSession(session.sessionId);
     if (!currentSession?.active) return;
+    if (message.params?.timestamp) syncCdpClock(currentSession, message.params.timestamp);
+    if (message.params?.wallTime && !currentSession.cdpTimeOffsetMs) {
+      currentSession.cdpTimeOffsetMs = (Number(message.params.wallTime) * 1000) - (Number(message.params.timestamp || 0) * 1000);
+    }
 
     if (message.method === 'Runtime.consoleAPICalled') {
       const args = message.params.args || [];
+      const relativeMs = getRelativeMsFromCdpTimestamp(currentSession, message.params.timestamp);
       emitLog({
         type: 'log',
         source: 'manual-cdp',
@@ -505,12 +607,14 @@ async function startCdpCapture(session, targetUrl) {
         level: message.params.type === 'error' ? 'SEVERE' : message.params.type === 'warning' ? 'WARNING' : 'INFO',
         console: true,
         log: args.map(arg => truncateText(arg.value ?? arg.description ?? arg.type)).join(' '),
-        timestamp: new Date().toISOString(),
-        relativeMs: getRelativeMs(currentSession),
+        timestamp: new Date(currentSession.startedAtMs + relativeMs).toISOString(),
+        relativeMs,
       });
+      sessionInfo.recording?.captureNow?.('console');
     }
 
     if (message.method === 'Runtime.exceptionThrown') {
+      const relativeMs = getRelativeMsFromCdpTimestamp(currentSession, message.params.timestamp);
       emitLog({
         type: 'log',
         source: 'manual-cdp',
@@ -519,34 +623,47 @@ async function startCdpCapture(session, targetUrl) {
         level: 'SEVERE',
         console: true,
         log: message.params.exceptionDetails?.text || 'Runtime exception',
-        timestamp: new Date().toISOString(),
-        relativeMs: getRelativeMs(currentSession),
+        timestamp: new Date(currentSession.startedAtMs + relativeMs).toISOString(),
+        relativeMs,
       });
+      sessionInfo.recording?.captureNow?.('exception');
     }
 
     if (message.method === 'Network.requestWillBeSent') {
+      if (sessionInfo.recording) sessionInfo.recording.lastNetworkActivityAt = Date.now();
+      const requestRelativeMs = getRelativeMsFromCdpTimestamp(currentSession, message.params.timestamp);
       sessionInfo.requestMeta.set(message.params.requestId, {
         method: message.params.request.method,
         url: message.params.request.url,
         headers: redactHeaders(message.params.request.headers),
         requestBody: redactPayload(message.params.request.postData),
         startedAt: Date.now(),
+        requestRelativeMs,
+        requestTimestamp: message.params.timestamp,
       });
+      sessionInfo.recording?.captureNow?.('network-request');
     }
 
     if (message.method === 'Network.responseReceived') {
+      if (sessionInfo.recording) sessionInfo.recording.lastNetworkActivityAt = Date.now();
       const request = sessionInfo.requestMeta.get(message.params.requestId) || {};
       const response = message.params.response;
+      const responseRelativeMs = getRelativeMsFromCdpTimestamp(currentSession, message.params.timestamp);
       sessionInfo.requestMeta.set(message.params.requestId, {
         ...request,
         status: response.status,
         responseHeaders: redactHeaders(response.headers),
+        responseRelativeMs,
+        responseTimestamp: message.params.timestamp,
       });
+      sessionInfo.recording?.captureNow?.('network-response');
     }
 
     if (message.method === 'Network.loadingFinished') {
+      if (sessionInfo.recording) sessionInfo.recording.lastNetworkActivityAt = Date.now();
       const request = sessionInfo.requestMeta.get(message.params.requestId);
       if (!request?.url) return;
+      const finishedRelativeMs = getRelativeMsFromCdpTimestamp(currentSession, message.params.timestamp);
       let body = null;
       try {
         const result = await cdp.send('Network.getResponseBody', { requestId: message.params.requestId });
@@ -565,7 +682,7 @@ async function startCdpCapture(session, targetUrl) {
           url: request.url,
           status: request.status,
           success: typeof request.status === 'number' ? request.status < 400 : undefined,
-          duration: Date.now() - request.startedAt,
+          duration: Math.max(0, Math.round(finishedRelativeMs - (request.requestRelativeMs ?? finishedRelativeMs))),
           headers: request.responseHeaders || request.headers,
           data: {
             requestHeaders: request.headers,
@@ -573,9 +690,10 @@ async function startCdpCapture(session, targetUrl) {
             responseBody: body,
           },
         },
-        timestamp: new Date().toISOString(),
-        relativeMs: getRelativeMs(currentSession),
+        timestamp: new Date(currentSession.startedAtMs + finishedRelativeMs).toISOString(),
+        relativeMs: finishedRelativeMs,
       });
+      sessionInfo.recording?.captureNow?.('network-finished');
     }
   });
 
@@ -685,6 +803,7 @@ const server = http.createServer((req, res) => {
       }
 
       const startedAtMs = Date.now();
+      const startedAtHrNs = process.hrtime.bigint().toString();
       const session = {
         sessionId,
         testCaseId,
@@ -692,6 +811,7 @@ const server = http.createServer((req, res) => {
         active: true,
         startedAt: new Date(startedAtMs).toISOString(),
         startedAtMs,
+        startedAtHrNs,
       };
       activeManualSessions.set(sessionId, session);
 

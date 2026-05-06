@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle, CheckCircle2, ChevronDown, ClipboardList, Clock, Code2, Copy, Edit3, Film, HelpCircle, History,
-  Layers, Loader2, Play, RefreshCw, Sparkles, Square, Trash2, Wrench, X
+  AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Code2, Copy, Edit3, Film, HelpCircle, History,
+  Filter, Layers, Loader2, Maximize2, Minus, Play, Plus, RefreshCw, Search, Sparkles, Square, Trash2, Wrench, X
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -27,6 +27,7 @@ interface LogEntry {
   level?: string;
   log?: unknown;
   isConsole?: boolean;
+  isNetwork?: boolean;
   network?: {
     event?: string;
     method?: string;
@@ -38,6 +39,46 @@ interface LogEntry {
     success?: boolean;
   };
 }
+
+type NetworkCategory = 'business' | 'preflight' | 'static' | 'telemetry' | 'data' | 'other';
+
+interface NetworkMeta {
+  category: NetworkCategory;
+  label: string;
+  host: string;
+  method: string;
+  pathname: string;
+  isError: boolean;
+}
+
+interface NetworkFilterState {
+  search: string;
+  host: string;
+  method: string;
+  status: string;
+  showPreflight: boolean;
+  showStatic: boolean;
+  showTelemetry: boolean;
+  showDataUrls: boolean;
+  showOther: boolean;
+}
+
+const DEFAULT_NETWORK_FILTERS: NetworkFilterState = {
+  search: '',
+  host: 'all',
+  method: 'all',
+  status: 'all',
+  showPreflight: false,
+  showStatic: false,
+  showTelemetry: false,
+  showDataUrls: false,
+  showOther: false,
+};
+
+const STATIC_EXTENSIONS = [
+  '.js', '.css', '.png', '.jpg', '.jpeg', '.svg', '.gif', '.webp', '.ico',
+  '.woff', '.woff2', '.ttf', '.map', '.json',
+];
 
 const formatPrettyValue = (value: unknown) => {
   if (value === undefined || value === null || value === '') return '-';
@@ -74,6 +115,84 @@ const getResponsePayload = (data: unknown) => {
   const record = asRecord(data);
   if (!record) return data;
   return record.responseBody ?? record.response ?? record.data ?? data;
+};
+
+const parseNetworkUrl = (url: string) => {
+  if (url.startsWith('data:')) {
+    return { host: 'data:', pathname: 'data:', protocol: 'data:' };
+  }
+
+  if (url.startsWith('blob:')) {
+    return { host: 'blob:', pathname: 'blob:', protocol: 'blob:' };
+  }
+
+  try {
+    const parsed = new URL(url, 'http://local.invalid');
+    return {
+      host: parsed.hostname || 'local',
+      pathname: parsed.pathname || '/',
+      protocol: parsed.protocol,
+    };
+  } catch {
+    return { host: 'unknown', pathname: url, protocol: '' };
+  }
+};
+
+const getNetworkMeta = (network: NonNullable<LogEntry['network']>): NetworkMeta => {
+  const url = network.url || '';
+  const parsed = parseNetworkUrl(url);
+  const method = (network.method || network.event || 'TRACE').toUpperCase();
+  const pathname = parsed.pathname.toLowerCase();
+  const isError = typeof network.status === 'number' && network.status >= 400;
+
+  if (parsed.protocol === 'data:' || parsed.protocol === 'blob:') {
+    return { category: 'data', label: 'Data URL', host: parsed.host, method, pathname: parsed.pathname, isError };
+  }
+
+  if (method === 'OPTIONS') {
+    return { category: 'preflight', label: 'Preflight', host: parsed.host, method, pathname: parsed.pathname, isError };
+  }
+
+  if (pathname.includes('/cdn-cgi/rum') || pathname.includes('/collect') || pathname.includes('/analytics')) {
+    return { category: 'telemetry', label: 'Telemetry', host: parsed.host, method, pathname: parsed.pathname, isError };
+  }
+
+  const isStatic = STATIC_EXTENSIONS.some((extension) => pathname.endsWith(extension)) ||
+    pathname.includes('/_next/') ||
+    pathname.includes('/assets/') ||
+    pathname.includes('/public/') ||
+    pathname.includes('/media/') ||
+    pathname.includes('/images/');
+
+  if (isStatic) {
+    return { category: 'static', label: 'Static', host: parsed.host, method, pathname: parsed.pathname, isError };
+  }
+
+  if (pathname.startsWith('/api/')) {
+    return { category: 'business', label: 'API', host: parsed.host, method, pathname: parsed.pathname, isError };
+  }
+
+  return { category: 'other', label: 'Other', host: parsed.host, method, pathname: parsed.pathname, isError };
+};
+
+const getNetworkCategoryClass = (category: NetworkCategory) => {
+  switch (category) {
+    case 'business': return 'border-cyan-500/30 bg-cyan-950/60 text-cyan-300';
+    case 'preflight': return 'border-amber-500/30 bg-amber-950/60 text-amber-300';
+    case 'static': return 'border-slate-600 bg-slate-900 text-slate-400';
+    case 'telemetry': return 'border-violet-500/30 bg-violet-950/60 text-violet-300';
+    case 'data': return 'border-fuchsia-500/30 bg-fuchsia-950/60 text-fuchsia-300';
+    default: return 'border-slate-500/30 bg-slate-800 text-slate-300';
+  }
+};
+
+const getStatusBucket = (status?: number) => {
+  if (typeof status !== 'number') return 'unknown';
+  if (status >= 500) return '5xx';
+  if (status >= 400) return '4xx';
+  if (status >= 300) return '3xx';
+  if (status >= 200) return '2xx';
+  return 'other';
 };
 
 const formatDateTime = (dateStr?: string | null) => {
@@ -152,7 +271,6 @@ interface TestCaseDetailDialogProps {
   generateAISummary: () => void;
   loadLogHistory: () => void;
   filterConsoleLogs: (logs: LogEntry[]) => LogEntry[];
-  filterNetworkLogs: (logs: LogEntry[]) => LogEntry[];
   getStatusColor: (status: string) => string;
   getStatusIcon: (status: string) => React.ReactNode;
   getTestTypeColor: (type: string) => string;
@@ -192,7 +310,6 @@ export function TestCaseDetailDialog({
   generateAISummary,
   loadLogHistory,
   filterConsoleLogs,
-  filterNetworkLogs,
   getStatusColor,
   getStatusIcon,
   getTestTypeColor,
@@ -202,8 +319,60 @@ export function TestCaseDetailDialog({
   onCopyId,
 }: TestCaseDetailDialogProps) {
   const [recordingSeekMs, setRecordingSeekMs] = useState(0);
+  const [recordingZoom, setRecordingZoom] = useState(1);
+  const [isRecordingFullscreen, setIsRecordingFullscreen] = useState(false);
+  const [isClosingRecordingFullscreen, setIsClosingRecordingFullscreen] = useState(false);
+  const [networkFilters, setNetworkFilters] = useState<NetworkFilterState>(DEFAULT_NETWORK_FILTERS);
+  const recordingViewportRef = useRef<HTMLDivElement>(null);
+  const fullscreenTimelineRef = useRef<HTMLDivElement>(null);
+  const recordingPanRef = useRef({ active: false, startX: 0, startY: 0, scrollLeft: 0, scrollTop: 0 });
   const consoleLogs = useMemo(() => filterConsoleLogs(liveLogs), [filterConsoleLogs, liveLogs]);
-  const networkLogs = useMemo(() => filterNetworkLogs(liveLogs), [filterNetworkLogs, liveLogs]);
+  const rawNetworkLogs = useMemo(() => (
+    liveLogs.filter((log) => log.isNetwork || Boolean(log.network))
+  ), [liveLogs]);
+  const networkLogItems = useMemo(() => (
+    rawNetworkLogs
+      .filter((log): log is LogEntry & { network: NonNullable<LogEntry['network']> } => Boolean(log.network))
+      .map((log) => ({ log, meta: getNetworkMeta(log.network) }))
+  ), [rawNetworkLogs]);
+  const networkHosts = useMemo(() => (
+    Array.from(new Set(networkLogItems.map((item) => item.meta.host))).filter(Boolean).sort()
+  ), [networkLogItems]);
+  const networkMethods = useMemo(() => (
+    Array.from(new Set(networkLogItems.map((item) => item.meta.method))).filter(Boolean).sort()
+  ), [networkLogItems]);
+  const networkCategoryCounts = useMemo(() => (
+    networkLogItems.reduce<Record<NetworkCategory, number>>((counts, item) => {
+      counts[item.meta.category] += 1;
+      return counts;
+    }, { business: 0, preflight: 0, static: 0, telemetry: 0, data: 0, other: 0 })
+  ), [networkLogItems]);
+  const networkLogs = useMemo(() => {
+    const query = networkFilters.search.trim().toLowerCase();
+
+    return networkLogItems.filter(({ log, meta }) => {
+      const statusBucket = getStatusBucket(log.network.status);
+      const categoryVisible = meta.isError ||
+        meta.category === 'business' ||
+        (meta.category === 'preflight' && networkFilters.showPreflight) ||
+        (meta.category === 'static' && networkFilters.showStatic) ||
+        (meta.category === 'telemetry' && networkFilters.showTelemetry) ||
+        (meta.category === 'data' && networkFilters.showDataUrls) ||
+        (meta.category === 'other' && networkFilters.showOther);
+
+      if (!categoryVisible) return false;
+      if (networkFilters.host !== 'all' && meta.host !== networkFilters.host) return false;
+      if (networkFilters.method !== 'all' && meta.method !== networkFilters.method) return false;
+      if (networkFilters.status !== 'all' && statusBucket !== networkFilters.status) return false;
+      if (!query) return true;
+
+      return log.network.url.toLowerCase().includes(query) ||
+        meta.host.toLowerCase().includes(query) ||
+        meta.method.toLowerCase().includes(query) ||
+        String(log.network.status ?? '').includes(query);
+    });
+  }, [networkFilters, networkLogItems]);
+  const hiddenNetworkCount = Math.max(0, networkLogItems.length - networkLogs.length);
   const isBugFixDetail = viewTestCase?.detailSource === 'bugfix' || Boolean(viewTestCase?.sourceTestCaseId && viewTestCase?.reportedAt);
   const lifecycleItems = useMemo(
     () => viewTestCase ? getBugLifecycleItems(viewTestCase) : [],
@@ -229,7 +398,8 @@ export function TestCaseDetailDialog({
 
   const formatRelativeTime = (relativeMs?: number) => {
     if (typeof relativeMs !== 'number') return '-';
-    const totalSeconds = Math.floor(relativeMs / 1000);
+    const safeMs = Math.max(0, Math.round(relativeMs));
+    const totalSeconds = Math.floor(safeMs / 1000);
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
     return `${minutes}:${String(seconds).padStart(2, '0')}`;
@@ -258,6 +428,87 @@ export function TestCaseDetailDialog({
   const getNetworkDuration = (network: NonNullable<LogEntry['network']>) => (
     typeof network.duration === 'number' ? `${network.duration}ms` : '-'
   );
+
+  const updateNetworkFilters = (nextFilters: Partial<NetworkFilterState>) => {
+    setNetworkFilters((current) => ({ ...current, ...nextFilters }));
+  };
+
+  const toggleNetworkFilter = (key: keyof Pick<NetworkFilterState, 'showPreflight' | 'showStatic' | 'showTelemetry' | 'showDataUrls' | 'showOther'>) => {
+    setNetworkFilters((current) => ({ ...current, [key]: !current[key] }));
+  };
+
+  const updateRecordingZoom = (delta: number) => {
+    setRecordingZoom((current) => Math.min(3, Math.max(0.5, Number((current + delta).toFixed(2)))));
+  };
+
+  const scrollFullscreenTimeline = (direction: 'left' | 'right') => {
+    fullscreenTimelineRef.current?.scrollBy({
+      left: direction === 'left' ? -260 : 260,
+      behavior: 'smooth',
+    });
+  };
+
+  const startRecordingPan = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (recordingZoom <= 1 || !recordingViewportRef.current) return;
+    recordingPanRef.current = {
+      active: true,
+      startX: event.clientX,
+      startY: event.clientY,
+      scrollLeft: recordingViewportRef.current.scrollLeft,
+      scrollTop: recordingViewportRef.current.scrollTop,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const moveRecordingPan = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!recordingPanRef.current.active || !recordingViewportRef.current) return;
+    event.preventDefault();
+    recordingViewportRef.current.scrollLeft = recordingPanRef.current.scrollLeft - (event.clientX - recordingPanRef.current.startX);
+    recordingViewportRef.current.scrollTop = recordingPanRef.current.scrollTop - (event.clientY - recordingPanRef.current.startY);
+  };
+
+  const stopRecordingPan = () => {
+    recordingPanRef.current.active = false;
+  };
+
+  const handleTimelineWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    if (!event.shiftKey) return;
+    event.preventDefault();
+    fullscreenTimelineRef.current?.scrollBy({
+      left: event.deltaY || event.deltaX,
+      behavior: 'auto',
+    });
+  };
+
+  const openRecordingFullscreen = () => {
+    setRecordingZoom(1);
+    setIsClosingRecordingFullscreen(false);
+    setIsRecordingFullscreen(true);
+  };
+
+  const closeRecordingFullscreen = () => {
+    setIsClosingRecordingFullscreen(true);
+    window.setTimeout(() => {
+      setIsRecordingFullscreen(false);
+      setIsClosingRecordingFullscreen(false);
+    }, 180);
+  };
+
+  useEffect(() => {
+    const viewport = recordingViewportRef.current;
+    if (!isRecordingFullscreen || !viewport) return undefined;
+
+    const handleWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      setRecordingZoom((current) => (
+        Math.min(3, Math.max(0.5, Number((current + (event.deltaY > 0 ? -0.1 : 0.1)).toFixed(2))))
+      ));
+    };
+
+    viewport.addEventListener('wheel', handleWheel, { passive: false });
+    return () => viewport.removeEventListener('wheel', handleWheel);
+  }, [isRecordingFullscreen]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -605,7 +856,11 @@ export function TestCaseDetailDialog({
 
                     {manualRecording?.frames?.length ? (
                       <div className="mb-4 grid gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm lg:grid-cols-[280px_1fr]">
-                        <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-950">
+                        <button
+                          type="button"
+                          className="group relative overflow-hidden rounded-lg border border-slate-200 bg-slate-950 text-left"
+                          onClick={openRecordingFullscreen}
+                        >
                           {selectedRecordingFrame && (
                             <img
                               src={`http://127.0.0.1:3001${selectedRecordingFrame.url}`}
@@ -613,10 +868,16 @@ export function TestCaseDetailDialog({
                               className="aspect-video w-full bg-slate-950 object-contain"
                             />
                           )}
-                        </div>
+                          <div className="absolute inset-0 flex items-center justify-center bg-slate-950/0 opacity-0 transition group-hover:bg-slate-950/45 group-hover:opacity-100">
+                            <span className="inline-flex items-center gap-2 rounded-md bg-white px-3 py-2 text-[11px] font-bold text-slate-900 shadow-lg">
+                              <Maximize2 className="h-3.5 w-3.5" />
+                              Fullscreen
+                            </span>
+                          </div>
+                        </button>
                         <div className="flex min-w-0 flex-col justify-between gap-3">
                           <div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
                               <Film className="h-4 w-4 text-indigo-600" />
                               <p className="text-xs font-black uppercase tracking-widest text-slate-600">Screen Recording</p>
                               <Badge variant="outline" className="rounded-md border-indigo-200 bg-indigo-50 text-[10px] font-bold text-indigo-700">
@@ -625,6 +886,16 @@ export function TestCaseDetailDialog({
                               <Badge variant="outline" className="rounded-md border-slate-200 bg-slate-50 text-[10px] font-bold text-slate-600">
                                 {formatRelativeTime(recordingSeekMs)}
                               </Badge>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="ml-auto h-7 gap-1.5 rounded-md border-slate-200 px-2 text-[10px] font-bold"
+                                onClick={openRecordingFullscreen}
+                              >
+                                <Maximize2 className="h-3.5 w-3.5" />
+                                Fullscreen
+                              </Button>
                             </div>
                             <p className="mt-2 truncate text-xs text-slate-500">
                               {manualRecording.targetUrl || 'Manual capture target'}
@@ -844,9 +1115,97 @@ export function TestCaseDetailDialog({
                           </div>
                         ) : (
                           <div className="h-full flex flex-col">
+                            <div className="space-y-2 border-b border-slate-800 bg-slate-950 p-3">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <div className="relative min-w-[220px] flex-1">
+                                  <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+                                  <Input
+                                    value={networkFilters.search}
+                                    onChange={(event) => updateNetworkFilters({ search: event.target.value })}
+                                    placeholder="Search URL, host, method, status..."
+                                    className="h-8 border-slate-800 bg-slate-900 pl-8 text-[11px] text-slate-200 placeholder:text-slate-600"
+                                  />
+                                </div>
+                                <select
+                                  value={networkFilters.host}
+                                  onChange={(event) => updateNetworkFilters({ host: event.target.value })}
+                                  className="h-8 min-w-[150px] rounded-md border border-slate-800 bg-slate-900 px-2 text-[11px] font-semibold text-slate-300 outline-none focus:border-indigo-500"
+                                >
+                                  <option value="all">All hosts ({networkLogItems.length})</option>
+                                  {networkHosts.map((host) => (
+                                    <option key={host} value={host}>{host}</option>
+                                  ))}
+                                </select>
+                                <select
+                                  value={networkFilters.method}
+                                  onChange={(event) => updateNetworkFilters({ method: event.target.value })}
+                                  className="h-8 rounded-md border border-slate-800 bg-slate-900 px-2 text-[11px] font-semibold text-slate-300 outline-none focus:border-indigo-500"
+                                >
+                                  <option value="all">All methods</option>
+                                  {networkMethods.map((method) => (
+                                    <option key={method} value={method}>{method}</option>
+                                  ))}
+                                </select>
+                                <select
+                                  value={networkFilters.status}
+                                  onChange={(event) => updateNetworkFilters({ status: event.target.value })}
+                                  className="h-8 rounded-md border border-slate-800 bg-slate-900 px-2 text-[11px] font-semibold text-slate-300 outline-none focus:border-indigo-500"
+                                >
+                                  <option value="all">All status</option>
+                                  <option value="2xx">2xx</option>
+                                  <option value="3xx">3xx</option>
+                                  <option value="4xx">4xx</option>
+                                  <option value="5xx">5xx</option>
+                                  <option value="unknown">Unknown</option>
+                                </select>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-8 gap-1.5 px-2 text-[10px] font-bold text-slate-400 hover:bg-slate-900 hover:text-white"
+                                  onClick={() => setNetworkFilters(DEFAULT_NETWORK_FILTERS)}
+                                >
+                                  <Filter className="h-3.5 w-3.5" />
+                                  Reset
+                                </Button>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2 text-[10px]">
+                                {[
+                                  { key: 'showPreflight' as const, label: `Preflight ${networkCategoryCounts.preflight}` },
+                                  { key: 'showStatic' as const, label: `Static ${networkCategoryCounts.static}` },
+                                  { key: 'showTelemetry' as const, label: `Telemetry ${networkCategoryCounts.telemetry}` },
+                                  { key: 'showDataUrls' as const, label: `Data URL ${networkCategoryCounts.data}` },
+                                  { key: 'showOther' as const, label: `Other ${networkCategoryCounts.other}` },
+                                ].map((filter) => (
+                                  <Button
+                                    key={filter.key}
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    className={`h-7 rounded-full border px-3 text-[10px] font-bold ${
+                                      networkFilters[filter.key]
+                                        ? 'border-indigo-500/40 bg-indigo-950/60 text-indigo-200 hover:bg-indigo-900/60'
+                                        : 'border-slate-800 bg-slate-900 text-slate-500 hover:bg-slate-800 hover:text-slate-200'
+                                    }`}
+                                    onClick={() => toggleNetworkFilter(filter.key)}
+                                  >
+                                    {filter.label}
+                                  </Button>
+                                ))}
+                                <span className="ml-auto rounded-full border border-cyan-500/20 bg-cyan-950/40 px-2 py-1 font-bold text-cyan-300">
+                                  API {networkCategoryCounts.business}
+                                </span>
+                                {hiddenNetworkCount > 0 && (
+                                  <span className="rounded-full border border-slate-800 bg-slate-900 px-2 py-1 font-bold text-slate-500">
+                                    {hiddenNetworkCount} hidden
+                                  </span>
+                                )}
+                              </div>
+                            </div>
                             <div className="grid grid-cols-12 gap-2 p-2 bg-slate-900 border-b border-slate-800 text-[10px] font-bold text-slate-500 uppercase tracking-tighter shrink-0">
                               <div className="col-span-1">Method</div>
-                              <div className="col-span-6">Name / URL</div>
+                              <div className="col-span-1">Type</div>
+                              <div className="col-span-5">Name / URL</div>
                               <div className="col-span-2 text-center">Status</div>
                               <div className="col-span-2 text-right">Time</div>
                               <div className="col-span-1"></div>
@@ -858,8 +1217,7 @@ export function TestCaseDetailDialog({
                                   <p className="font-bold tracking-widest text-[10px] uppercase">Waiting for Network Traffic...</p>
                                 </div>
                               ) : (
-                                networkLogs.map((net, index) => {
-                                  if (!net.network) return null;
+                                networkLogs.map(({ log: net, meta }, index) => {
                                   const logId = net.id ?? `network-${index}`;
 
                                   return (
@@ -872,7 +1230,15 @@ export function TestCaseDetailDialog({
                                         }}
                                       >
                                         <div className="col-span-1 font-black text-indigo-400 truncate">{getNetworkMethod(net.network)}</div>
-                                        <div className="col-span-6 truncate text-slate-300">{net.network.url.split('/').pop() || net.network.url}</div>
+                                        <div className="col-span-1 truncate">
+                                          <span className={`rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase ${getNetworkCategoryClass(meta.category)}`}>
+                                            {meta.label}
+                                          </span>
+                                        </div>
+                                        <div className="col-span-5 min-w-0">
+                                          <div className="truncate text-slate-300">{meta.pathname.split('/').pop() || meta.pathname || net.network.url}</div>
+                                          <div className="truncate text-[9px] text-slate-600">{meta.host}</div>
+                                        </div>
                                         <div className="col-span-2 text-center">
                                           <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${getNetworkStatusClass(net.network)}`}>
                                             {getNetworkStatus(net.network)}
@@ -955,6 +1321,261 @@ export function TestCaseDetailDialog({
                   </div>
                 </TabsContent>
               </Tabs>
+            </div>
+          </div>
+        )}
+
+        {isRecordingFullscreen && manualRecording?.frames?.length && (
+          <div
+            className={`fixed inset-0 z-[80] flex bg-slate-950 text-slate-100 transition-opacity duration-200 ${
+              isClosingRecordingFullscreen ? 'opacity-0' : 'opacity-100'
+            }`}
+          >
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="fixed right-6 top-2 z-[90] h-10 w-10 rounded-full border border-white/10 bg-slate-950/80 p-0 text-slate-300 shadow-2xl backdrop-blur transition hover:scale-105 hover:bg-white hover:text-slate-950"
+              onClick={closeRecordingFullscreen}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+            <div className={`flex min-w-0 flex-1 flex-col transition duration-200 ${isClosingRecordingFullscreen ? 'scale-[0.985]' : 'scale-100'}`}>
+              <div className="flex h-14 shrink-0 items-center justify-between border-b border-slate-800 bg-slate-950 px-5">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <Film className="h-4 w-4 text-indigo-300" />
+                    <p className="text-xs font-black uppercase tracking-widest text-slate-200">Screen Record Review</p>
+                    <Badge variant="outline" className="rounded-md border-indigo-400/30 bg-indigo-950 text-[10px] font-bold text-indigo-200">
+                      {formatRelativeTime(recordingSeekMs)}
+                    </Badge>
+                  </div>
+                  <p className="mt-1 truncate text-[11px] text-slate-500">{manualRecording.targetUrl || 'Manual capture target'}</p>
+                </div>
+                <div className="mr-12 flex items-center gap-1 rounded-md bg-slate-900 p-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 w-7 p-0 text-slate-400 hover:bg-slate-800 hover:text-white"
+                    onClick={() => updateRecordingZoom(-0.1)}
+                  >
+                    <Minus className="h-3.5 w-3.5" />
+                  </Button>
+                  <span className="min-w-[42px] text-center text-[10px] font-bold text-slate-400">
+                    {Math.round(recordingZoom * 100)}%
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 w-7 p-0 text-slate-400 hover:bg-slate-800 hover:text-white"
+                    onClick={() => updateRecordingZoom(0.1)}
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+
+              <div
+                ref={recordingViewportRef}
+                className={`flex min-h-0 flex-1 overflow-auto bg-black p-4 ${
+                  recordingZoom > 1 ? 'cursor-grab active:cursor-grabbing' : 'items-center justify-center'
+                }`}
+                onPointerDown={startRecordingPan}
+                onPointerMove={moveRecordingPan}
+                onPointerUp={stopRecordingPan}
+                onPointerCancel={stopRecordingPan}
+                onPointerLeave={stopRecordingPan}
+              >
+                {selectedRecordingFrame && (
+                  <div
+                    className="m-auto flex shrink-0 items-center justify-center"
+                    style={{
+                      width: recordingZoom <= 1 ? '100%' : `${recordingZoom * 100}%`,
+                      minHeight: recordingZoom <= 1 ? '100%' : `${recordingZoom * 100}%`,
+                    }}
+                  >
+                    <img
+                      src={`http://127.0.0.1:3001${selectedRecordingFrame.url}`}
+                      alt="Manual capture fullscreen frame"
+                      draggable={false}
+                      className="select-none object-contain shadow-2xl transition-[width,height] duration-150"
+                      style={{
+                        maxWidth: recordingZoom <= 1 ? '100%' : 'none',
+                        maxHeight: recordingZoom <= 1 ? '100%' : 'none',
+                        width: recordingZoom <= 1 ? 'auto' : '100%',
+                        height: recordingZoom <= 1 ? 'auto' : 'auto',
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="shrink-0 border-t border-slate-800 bg-slate-950 p-3">
+                <div className="mb-2 flex items-center justify-between gap-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                  <span>Timeline</span>
+                  <div className="flex items-center gap-2">
+                    <span>{manualRecording.frames.length} frames</span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 w-7 rounded-md border border-slate-800 bg-slate-900 p-0 text-slate-400 hover:bg-slate-800 hover:text-white"
+                      onClick={() => scrollFullscreenTimeline('left')}
+                    >
+                      <ChevronLeft className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 w-7 rounded-md border border-slate-800 bg-slate-900 p-0 text-slate-400 hover:bg-slate-800 hover:text-white"
+                      onClick={() => scrollFullscreenTimeline('right')}
+                    >
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+                <div
+                  ref={fullscreenTimelineRef}
+                  className="flex gap-1.5 overflow-x-auto pb-1"
+                  onWheel={handleTimelineWheel}
+                >
+                  {manualRecording.frames
+                    .filter((_, index) => index % Math.max(1, Math.floor(manualRecording.frames.length / 28)) === 0)
+                    .slice(0, 28)
+                    .map((frame) => (
+                      <Button
+                        key={`fullscreen-${frame.file}`}
+                        type="button"
+                        variant={selectedRecordingFrame?.file === frame.file ? 'default' : 'ghost'}
+                        size="sm"
+                        className={`h-8 shrink-0 rounded-md px-2 text-[10px] font-bold ${
+                          selectedRecordingFrame?.file === frame.file
+                            ? 'bg-indigo-500 text-white hover:bg-indigo-500'
+                            : 'border border-slate-800 bg-slate-900 text-slate-400 hover:bg-slate-800 hover:text-white'
+                        }`}
+                        onClick={() => setRecordingSeekMs(frame.relativeMs)}
+                      >
+                        {formatRelativeTime(frame.relativeMs)}
+                      </Button>
+                    ))}
+                </div>
+              </div>
+            </div>
+
+            <div className={`flex w-[420px] shrink-0 flex-col border-l border-slate-800 bg-slate-950 transition duration-200 xl:w-[520px] ${isClosingRecordingFullscreen ? 'translate-x-4' : 'translate-x-0'}`}>
+              <div className="flex h-24 shrink-0 items-end justify-between gap-4 border-b border-slate-800 px-3 pb-3 pt-12 pr-16">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-widest text-slate-200">DevTools</p>
+                  <p className="text-[10px] text-slate-500">Klik log untuk loncat ke timestamp record.</p>
+                </div>
+                <div className="flex rounded-md bg-slate-900 p-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className={`h-7 px-2 text-[10px] font-bold ${activeDevLogTab === 'console' ? 'bg-white text-slate-900 hover:bg-white' : 'text-slate-400 hover:text-white'}`}
+                    onClick={() => setActiveDevLogTab('console')}
+                  >
+                    CONSOLE
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className={`h-7 px-2 text-[10px] font-bold ${activeDevLogTab === 'network' ? 'bg-white text-slate-900 hover:bg-white' : 'text-slate-400 hover:text-white'}`}
+                    onClick={() => setActiveDevLogTab('network')}
+                  >
+                    NETWORK
+                  </Button>
+                </div>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                {activeDevLogTab === 'network' ? (
+                  <div className="divide-y divide-slate-800/70">
+                    {networkLogs.length === 0 ? (
+                      <div className="flex h-full flex-col items-center justify-center py-20 text-slate-600">
+                        <RefreshCw className="mb-3 h-8 w-8 opacity-20" />
+                        <p className="text-[10px] font-bold uppercase tracking-widest">No Network Rows</p>
+                      </div>
+                    ) : (
+                      networkLogs.map(({ log: net, meta }, index) => {
+                        const logId = net.id ?? `fullscreen-network-${index}`;
+
+                        return (
+                          <div key={logId} className="hover:bg-white/5">
+                            <button
+                              type="button"
+                              className="grid w-full grid-cols-12 items-center gap-2 p-2 text-left"
+                              onClick={() => {
+                                seekRecordingFromLog(net);
+                                setExpandedLogId(expandedLogId === logId ? null : logId);
+                              }}
+                            >
+                              <span className="col-span-2 truncate font-black text-indigo-300">{getNetworkMethod(net.network)}</span>
+                              <span className="col-span-2 truncate">
+                                <span className={`rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase ${getNetworkCategoryClass(meta.category)}`}>
+                                  {meta.label}
+                                </span>
+                              </span>
+                              <span className="col-span-4 min-w-0">
+                                <span className="block truncate text-[11px] text-slate-300">{meta.pathname.split('/').pop() || meta.pathname || net.network.url}</span>
+                                <span className="block truncate text-[9px] text-slate-600">{meta.host}</span>
+                              </span>
+                              <span className="col-span-2 text-center">
+                                <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${getNetworkStatusClass(net.network)}`}>
+                                  {getNetworkStatus(net.network)}
+                                </span>
+                              </span>
+                              <span className="col-span-2 text-right text-[10px] font-bold text-slate-500">
+                                {formatRelativeTime(net.relativeMs)}
+                              </span>
+                            </button>
+                            {expandedLogId === logId && (
+                              <div className="space-y-2 border-t border-slate-800 bg-slate-900/60 p-3">
+                                <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-all rounded border border-slate-800 bg-slate-950 p-2 text-[10px] text-slate-300">{net.network.url}</pre>
+                                <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words rounded border border-slate-800 bg-slate-950 p-2 text-[10px] text-emerald-300/80">{formatPrettyValue(getResponsePayload(net.network.data))}</pre>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-800/70">
+                    {consoleLogs.length === 0 ? (
+                      <div className="flex h-full flex-col items-center justify-center py-20 text-slate-600">
+                        <Clock className="mb-3 h-8 w-8 opacity-20" />
+                        <p className="text-[10px] font-bold uppercase tracking-widest">No Console Rows</p>
+                      </div>
+                    ) : (
+                      consoleLogs.map((log, index) => {
+                        const logId = log.id ?? `fullscreen-console-${index}`;
+                        const isError = log.level === 'SEVERE' || log.log?.toString().toLowerCase().includes('error');
+                        const isWarning = log.level === 'WARNING' || log.log?.toString().toLowerCase().includes('warn');
+
+                        return (
+                          <button
+                            key={logId}
+                            type="button"
+                            className={`grid w-full grid-cols-12 gap-2 p-2 text-left hover:bg-white/5 ${isError ? 'bg-rose-950/20' : isWarning ? 'bg-amber-950/20' : ''}`}
+                            onClick={() => seekRecordingFromLog(log)}
+                          >
+                            <span className="col-span-2 text-[10px] font-bold text-slate-500">{formatRelativeTime(log.relativeMs)}</span>
+                            <span className={`col-span-10 break-all text-[11px] ${isError ? 'text-rose-300' : isWarning ? 'text-amber-300' : 'text-emerald-300/90'}`}>
+                              {typeof log.log === 'object' ? `${JSON.stringify(log.log).substring(0, 240)}...` : String(log.log ?? '')}
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}
