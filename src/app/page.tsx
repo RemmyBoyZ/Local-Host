@@ -211,7 +211,6 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
 // ============== MAIN APP ==============
 export default function TestCaseManager() {
   const { toast } = useToast();
-  const [mounted, setMounted] = useState(false);
 
   // Core state
   const [projects, setProjects] = useState<Project[]>([]);
@@ -499,14 +498,14 @@ export default function TestCaseManager() {
 
   // Initial load
   useEffect(() => {
-    setMounted(true);
-    loadProjects();
+    const timer = window.setTimeout(() => loadProjects(), 0);
+    return () => window.clearTimeout(timer);
   }, []);
   // Reload when project changes
   useEffect(() => {
-    if (selectedProject) {
-      loadAll(selectedProject);
-    }
+    if (!selectedProject) return;
+    const timer = window.setTimeout(() => loadAll(selectedProject), 0);
+    return () => window.clearTimeout(timer);
   }, [selectedProject]);
   // Reload test cases when filters/pagination change
   useEffect(() => {
@@ -514,107 +513,172 @@ export default function TestCaseManager() {
   }, [page, sortBy, sortOrder, debouncedSearch, filterStatus, filterTestType, filterPriority, filterModule]);
   // Reload bugfix when filters or tab change
   useEffect(() => {
-    if (selectedProject) loadBugFix(selectedProject);
+    if (!selectedProject) return;
+    const timer = window.setTimeout(() => loadBugFix(selectedProject), 0);
+    return () => window.clearTimeout(timer);
   }, [debouncedBugFixSearch, bugFixFilterStatus, bugFixTab]);
 
   // ============== HANDLERS ==============
   const handleCreateProject = async () => {
     if (!newProjectName.trim()) return;
-    const res = await fetch('/api/projects', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: newProjectName, description: newProjectDesc }),
-    });
-    if (res.ok) {
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newProjectName.trim(), description: newProjectDesc.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Project gagal dibuat');
+
       toast({ title: 'Berhasil', description: 'Project berhasil dibuat' });
       setShowCreateProject(false);
       setNewProjectName('');
       setNewProjectDesc('');
       loadProjects();
+    } catch (error: any) {
+      toast({ title: 'Gagal membuat project', description: error.message, variant: 'destructive' });
     }
   };
 
   const handleDeleteProject = async (id: string) => {
-    await fetch(`/api/projects?id=${id}`, { method: 'DELETE' });
-    toast({ title: 'Berhasil', description: 'Project berhasil dihapus' });
-    if (selectedProject === id) setSelectedProject('');
-    loadProjects();
+    try {
+      const res = await fetch(`/api/projects?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Project gagal dihapus');
+      toast({ title: 'Berhasil', description: 'Project berhasil dihapus' });
+      if (selectedProject === id) setSelectedProject('');
+      loadProjects();
+    } catch (error: any) {
+      toast({ title: 'Gagal menghapus project', description: error.message, variant: 'destructive' });
+    }
   };
 
   const handleCreateModule = async () => {
     if (!newModuleName.trim() || !selectedProject) return;
-    const res = await fetch('/api/modules', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: newModuleName, projectId: selectedProject }),
-    });
-    if (res.ok) {
+    try {
+      const res = await fetch('/api/modules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newModuleName.trim(), projectId: selectedProject }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Module gagal dibuat');
+
       toast({ title: 'Berhasil', description: 'Module berhasil dibuat' });
       setShowCreateModule(false);
       setNewModuleName('');
       loadModules(selectedProject);
+    } catch (error: any) {
+      toast({ title: 'Gagal membuat module', description: error.message, variant: 'destructive' });
     }
   };
 
   const handleDeleteModule = async (id: string) => {
-    await fetch(`/api/modules?id=${id}`, { method: 'DELETE' });
-    toast({ title: 'Berhasil', description: 'Module berhasil dihapus' });
-    loadModules(selectedProject);
+    try {
+      const res = await fetch(`/api/modules?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Module gagal dihapus');
+      toast({ title: 'Berhasil', description: 'Module berhasil dihapus' });
+      loadModules(selectedProject);
+    } catch (error: any) {
+      toast({ title: 'Gagal menghapus module', description: error.message, variant: 'destructive' });
+    }
   };
 
   const handleDeleteTestCase = async (id: string) => {
-    await fetch(`/api/testcases?id=${id}`, { method: 'DELETE' });
-    toast({ title: 'Berhasil', description: 'Test case berhasil dihapus' });
-    setShowDeleteConfirm(false);
-    loadAll(selectedProject);
+    try {
+      const res = await fetch(`/api/testcases?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Test case gagal dihapus');
+      toast({ title: 'Berhasil', description: 'Test case berhasil dihapus' });
+      setShowDeleteConfirm(false);
+      loadAll(selectedProject);
+    } catch (error: any) {
+      toast({ title: 'Gagal menghapus test case', description: error.message, variant: 'destructive' });
+    }
   };
 
   const handleBulkDelete = async () => {
     const ids = Array.from(selectedIds).join(',');
-    await fetch(`/api/testcases?ids=${ids}`, { method: 'DELETE' });
-    toast({ title: 'Berhasil', description: `${selectedIds.size} test case berhasil dihapus` });
-    setSelectedIds(new Set());
-    loadAll(selectedProject);
+    try {
+      const res = await fetch(`/api/testcases?ids=${encodeURIComponent(ids)}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Bulk delete gagal');
+      toast({ title: 'Berhasil', description: `${selectedIds.size} test case berhasil dihapus` });
+      setSelectedIds(new Set());
+      loadAll(selectedProject);
+    } catch (error: any) {
+      toast({ title: 'Gagal bulk delete', description: error.message, variant: 'destructive' });
+    }
   };
 
   const handleBulkStatusUpdate = async () => {
-    const updates = Array.from(selectedIds).map(async (id) => {
-      await fetch('/api/testcases', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, status: bulkStatus, progress: bulkStatus === 'DONE' ? 100 : (bulkStatus === 'IN PROGRESS' || bulkStatus === 'READY TO RETEST') ? 50 : bulkStatus === 'TBA' ? 0 : 0 }),
+    if (selectedIds.size === 0) return;
+
+    const updates = await Promise.all(Array.from(selectedIds).map(async (id) => {
+      try {
+        const response = await fetch('/api/testcases', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, status: bulkStatus }),
+        });
+        const data = await response.json().catch(() => ({}));
+        return { ok: response.ok, error: data.error || 'Update gagal' };
+      } catch (error: any) {
+        return { ok: false, error: error.message || 'Update gagal' };
+      }
+    }));
+
+    const successCount = updates.filter(result => result.ok).length;
+    const errorCount = updates.length - successCount;
+
+    if (successCount > 0) {
+      toast({
+        title: errorCount > 0 ? 'Sebagian Berhasil' : 'Berhasil',
+        description: `${successCount} test case berhasil diupdate${errorCount > 0 ? `, ${errorCount} gagal` : ''}`,
+        variant: errorCount > 0 ? 'default' : undefined,
       });
-    });
-    await Promise.all(updates);
-    toast({ title: 'Berhasil', description: `${selectedIds.size} test case berhasil diupdate` });
-    setSelectedIds(new Set());
-    setShowBulkAction(false);
-    loadAll(selectedProject);
+      setSelectedIds(new Set());
+      setShowBulkAction(false);
+      loadAll(selectedProject);
+    } else {
+      toast({
+        title: 'Gagal update status',
+        description: updates[0]?.error || 'Tidak ada test case yang berhasil diupdate',
+        variant: 'destructive',
+      });
+    }
   };
 
   const handleDuplicate = async (tc: TestCase) => {
-    await fetch('/api/testcases', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...EMPTY_TEST_CASE,
-        testCaseId: tc.testCaseId + ' (Copy)',
-        page: tc.page,
-        subMenu: tc.subMenu,
-        weight: tc.weight,
-        testType: tc.testType,
-        testAction: tc.testAction,
-        steps: tc.steps,
-        expectedResult: tc.expectedResult,
-        status: 'NOT DONE',
-        progress: 0,
-        priority: tc.priority,
-        projectId: selectedProject,
-        moduleId: tc.moduleId,
-      }),
-    });
-    toast({ title: 'Berhasil', description: 'Test case berhasil diduplikasi' });
-    loadTestCases(selectedProject);
+    try {
+      const response = await fetch('/api/testcases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...EMPTY_TEST_CASE,
+          testCaseId: `${tc.testCaseId}-COPY-${Date.now().toString().slice(-5)}`,
+          page: tc.page,
+          subMenu: tc.subMenu,
+          weight: tc.weight,
+          testType: tc.testType,
+          testAction: tc.testAction,
+          steps: tc.steps,
+          expectedResult: tc.expectedResult,
+          status: 'NOT DONE',
+          priority: tc.priority,
+          projectId: selectedProject,
+          moduleId: tc.moduleId,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Test case gagal diduplikasi');
+
+      toast({ title: 'Berhasil', description: 'Test case berhasil diduplikasi' });
+      loadTestCases(selectedProject);
+    } catch (error: any) {
+      toast({ title: 'Gagal duplikasi', description: error.message, variant: 'destructive' });
+    }
   };
 
   const resetImportPreview = () => {
@@ -1099,8 +1163,6 @@ export default function TestCaseManager() {
   );
 
   // ============== MAIN RENDER ==============
-  if (!mounted) return null;
-
   return (
     <div>
       <AppShell

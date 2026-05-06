@@ -3,6 +3,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
 
+type ExportTestCase = Awaited<ReturnType<typeof db.testCase.findMany>>[number] & {
+  module?: { name: string } | null;
+};
+
 // Known header keywords to auto-detect the header row
 const HEADER_KEYWORDS = ['ID', 'Page', 'Sub Menu', 'Feature', 'Test', 'Action', 'Step', 'Expected Result', 'Actual Result', 'Status', 'Remarks'];
 
@@ -253,13 +257,35 @@ export async function POST(req: NextRequest) {
 
     if (!file) return NextResponse.json({ error: 'No file provided' }, { status: 400 });
     if (!projectId) return NextResponse.json({ error: 'Project ID is required' }, { status: 400 });
+    const project = await db.project.findUnique({ where: { id: projectId }, select: { id: true } });
+    if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
     const buffer = Buffer.from(await file.arrayBuffer());
-    const workbook = XLSX.read(buffer, { type: 'buffer' });
+    let workbook: XLSX.WorkBook;
+    try {
+      workbook = XLSX.read(buffer, { type: 'buffer' });
+    } catch {
+      return NextResponse.json({ error: 'File Excel tidak dapat dibaca.' }, { status: 400 });
+    }
+
+    if (!workbook.SheetNames.length) {
+      return NextResponse.json({ error: 'Workbook tidak memiliki sheet.' }, { status: 400 });
+    }
 
     if (mode === 'preview') {
       const preview = await buildImportPreview(workbook, projectId, createModules);
       return NextResponse.json(preview);
+    }
+    if (mode !== 'import') {
+      return NextResponse.json({ error: 'Mode import tidak valid.' }, { status: 400 });
+    }
+
+    const preview = await buildImportPreview(workbook, projectId, createModules);
+    if (!preview.canImport) {
+      return NextResponse.json({
+        error: 'File belum aman untuk diimport. Periksa preview import terlebih dahulu.',
+        preview,
+      }, { status: 400 });
     }
 
     let totalImported = 0;
@@ -343,6 +369,10 @@ export async function POST(req: NextRequest) {
           finalSteps = steps;
         } else if (action) {
           finalSteps = action;
+        } else if (testDescription) {
+          finalSteps = testDescription;
+        } else if (feature) {
+          finalSteps = feature;
         }
 
         // Expected result and actual result
@@ -523,7 +553,7 @@ const HEADERS = ['ID', 'Page', 'Sub Menu', 'Feature', 'Bobot', 'Test', 'Action',
 const COL_WIDTHS = [5.5, 5.75, 17.5, 42.63, 13, 54.13, 57, 62, 87.63, 38.13, 13, 13, 13];
 
 // Header fill color: FFD9EAD3 (light green from user's Excel)
-const HEADER_FILL: Partial<ExcelJS.FillPattern> = {
+const HEADER_FILL: ExcelJS.Fill = {
   type: 'pattern',
   pattern: 'solid',
   fgColor: { argb: 'FFD9EAD3' },
@@ -613,7 +643,7 @@ function addLegendSection(ws: ExcelJS.Worksheet) {
 /**
  * Write test case data rows to a worksheet starting at a given row
  */
-function writeTestCaseRows(ws: ExcelJS.Worksheet, testCases: typeof import('@/lib/db').db.testCase.findMany extends Promise<infer T> ? T : never, startRow: number): number {
+function writeTestCaseRows(ws: ExcelJS.Worksheet, testCases: ExportTestCase[], startRow: number): number {
   let currentRow = startRow;
 
   for (const tc of testCases) {
@@ -631,7 +661,7 @@ function writeTestCaseRows(ws: ExcelJS.Worksheet, testCases: typeof import('@/li
     // Extract action from steps if it was stored as "Prerequisite: ...\n\nSteps:\n..."
     let action = '';
     let steps = tc.steps || '';
-    const actionMatch = tc.steps?.match(/^Prerequisite:\s*(.+?)(?:\n\nSteps:\n|\nSteps:\n)(.*)/s);
+    const actionMatch = tc.steps?.match(/^Prerequisite:\s*([\s\S]+?)(?:\n\nSteps:\n|\nSteps:\n)([\s\S]*)/);
     if (actionMatch) {
       action = actionMatch[1];
       steps = actionMatch[2] || tc.steps;
@@ -678,6 +708,7 @@ export async function GET(req: NextRequest) {
       where: { id: projectId },
       select: { name: true },
     });
+    if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
     // ============== ExcelJS styled export matching user's Excel format ==============
     const workbook = new ExcelJS.Workbook();

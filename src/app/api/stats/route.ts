@@ -7,6 +7,8 @@ export async function GET(req: NextRequest) {
     const projectId = url.searchParams.get('projectId');
 
     if (!projectId) return NextResponse.json({ error: 'Project ID is required' }, { status: 400 });
+    const project = await db.project.findUnique({ where: { id: projectId }, select: { id: true } });
+    if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
     // Fetch all test cases with only needed fields (lighter query)
     const allTestCases = await db.testCase.findMany({

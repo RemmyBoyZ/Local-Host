@@ -1,6 +1,11 @@
 import { db } from '@/lib/db';
 import { NextRequest, NextResponse } from 'next/server';
 
+const TESTCASE_SORT_FIELDS = new Set(['createdAt', 'updatedAt', 'testCaseId', 'page', 'status', 'priority', 'testType']);
+const TESTCASE_STATUSES = new Set(['DONE', 'NOT DONE', 'IN PROGRESS', 'BLOCKED', 'FAILED', 'READY TO RETEST', 'TBA']);
+const TEST_TYPES = new Set(['Positive', 'Negative']);
+const PRIORITIES = new Set(['Low', 'Medium', 'High', 'Critical']);
+
 // Auto-calculate progress based on status
 const getProgressFromStatus = (status: string): number => {
   switch (status) {
@@ -15,6 +20,22 @@ const getProgressFromStatus = (status: string): number => {
   }
 };
 
+const cleanText = (value: unknown) => typeof value === 'string' ? value.trim() : '';
+const cleanNullableText = (value: unknown) => {
+  const text = cleanText(value);
+  return text ? text : null;
+};
+
+function parsePositiveInt(value: string | null, fallback: number, max: number) {
+  const parsed = Number.parseInt(value || '', 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, max);
+}
+
+function validationError(message: string) {
+  return NextResponse.json({ error: message }, { status: 400 });
+}
+
 export async function GET(req: NextRequest) {
   try {
     const url = new URL(req.url);
@@ -24,17 +45,38 @@ export async function GET(req: NextRequest) {
     const testType = url.searchParams.get('testType');
     const priority = url.searchParams.get('priority');
     const search = url.searchParams.get('search');
-    const page = parseInt(url.searchParams.get('page') || '1');
-    const limit = parseInt(url.searchParams.get('limit') || '50');
-    const sortBy = url.searchParams.get('sortBy') || 'createdAt';
-    const sortOrder = url.searchParams.get('sortOrder') || 'desc';
+    const page = parsePositiveInt(url.searchParams.get('page'), 1, 100000);
+    const limit = parsePositiveInt(url.searchParams.get('limit'), 50, 200);
+    const requestedSortBy = url.searchParams.get('sortBy') || 'createdAt';
+    const sortBy = TESTCASE_SORT_FIELDS.has(requestedSortBy) ? requestedSortBy : 'createdAt';
+    const sortOrder = url.searchParams.get('sortOrder') === 'asc' ? 'asc' : 'desc';
 
     const where: Record<string, unknown> = {};
-    if (projectId) where.projectId = projectId;
-    if (moduleId) where.moduleId = moduleId;
-    if (status) where.status = status;
-    if (testType) where.testType = testType;
-    if (priority) where.priority = priority;
+    if (projectId) {
+      const project = await db.project.findUnique({ where: { id: projectId }, select: { id: true } });
+      if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+      where.projectId = projectId;
+    }
+    if (moduleId) {
+      const moduleRecord = await db.module.findFirst({
+        where: { id: moduleId, ...(projectId ? { projectId } : {}) },
+        select: { id: true },
+      });
+      if (!moduleRecord) return NextResponse.json({ error: 'Module not found' }, { status: 404 });
+      where.moduleId = moduleId;
+    }
+    if (status) {
+      if (!TESTCASE_STATUSES.has(status)) return validationError('Status testcase tidak valid.');
+      where.status = status;
+    }
+    if (testType) {
+      if (!TEST_TYPES.has(testType)) return validationError('Tipe testcase tidak valid.');
+      where.testType = testType;
+    }
+    if (priority) {
+      if (!PRIORITIES.has(priority)) return validationError('Prioritas testcase tidak valid.');
+      where.priority = priority;
+    }
     if (search) {
       where.OR = [
         { id: { contains: search } },
@@ -97,39 +139,66 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const status = body.status || 'NOT DONE';
+    const testCaseId = cleanText(body.testCaseId);
+    const page = cleanText(body.page);
+    const testAction = cleanText(body.testAction);
+    const steps = cleanText(body.steps);
+    const expectedResult = cleanText(body.expectedResult);
+    const projectId = cleanText(body.projectId);
+    const status = TESTCASE_STATUSES.has(body.status) ? body.status : 'NOT DONE';
+    const testType = TEST_TYPES.has(body.testType) ? body.testType : 'Positive';
+    const priority = PRIORITIES.has(body.priority) ? body.priority : 'Medium';
+
+    if (!projectId) return validationError('Project wajib dipilih.');
+    if (!testCaseId) return validationError('Test Case ID wajib diisi.');
+    if (!page) return validationError('Page wajib diisi.');
+    if (!testAction) return validationError('Test Action wajib diisi.');
+    if (!steps) return validationError('Steps wajib diisi.');
+    if (!expectedResult) return validationError('Expected Result wajib diisi.');
+    const project = await db.project.findUnique({ where: { id: projectId }, select: { id: true } });
+    if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    const duplicate = await db.testCase.findFirst({
+      where: { projectId, testCaseId },
+      select: { id: true },
+    });
+    if (duplicate) return NextResponse.json({ error: `Test Case ID "${testCaseId}" sudah digunakan di project ini.` }, { status: 409 });
+
     const progress = getProgressFromStatus(status);
 
     // Normalize empty strings to null for optional fields
-    const subMenu = body.subMenu || null;
-    const weight = body.weight || null;
-    const actualResult = body.actualResult || null;
-    const remarks = body.remarks || null;
-    const moduleId = body.moduleId || null;
+    const subMenu = cleanNullableText(body.subMenu);
+    const weight = cleanNullableText(body.weight);
+    const actualResult = cleanNullableText(body.actualResult);
+    const remarks = cleanNullableText(body.remarks);
+    const moduleId = cleanNullableText(body.moduleId);
+    if (moduleId) {
+      const moduleRecord = await db.module.findFirst({ where: { id: moduleId, projectId }, select: { id: true } });
+      if (!moduleRecord) return NextResponse.json({ error: 'Module tidak ditemukan pada project ini.' }, { status: 404 });
+    }
 
     const testCase = await db.testCase.create({
       data: {
-        testCaseId: body.testCaseId,
-        page: body.page,
+        testCaseId,
+        page,
         subMenu,
         weight,
-        testType: body.testType || 'Positive',
-        testAction: body.testAction,
-        steps: body.steps,
-        expectedResult: body.expectedResult,
+        testType,
+        testAction,
+        steps,
+        expectedResult,
         actualResult,
         status,
         progress,
         remarks,
-        priority: body.priority || 'Medium',
-        projectId: body.projectId,
+        priority,
+        projectId,
         moduleId,
       },
       include: { project: true, module: true },
     });
 
     // Recalculate weights for all test cases in the same menu (background, non-blocking)
-    recalculateWeights(body.projectId, body.page, subMenu).catch(() => {});
+    recalculateWeights(projectId, page, subMenu).catch(() => {});
 
     return NextResponse.json(testCase, { status: 201 });
   } catch (error) {
@@ -153,6 +222,25 @@ export async function PUT(req: NextRequest) {
 
     // Keep status and actual result in sync for the bug-fix retest flow.
     let finalStatus = data.status ?? current.status;
+    if (!TESTCASE_STATUSES.has(finalStatus)) return validationError('Status testcase tidak valid.');
+    if (data.testType !== undefined && !TEST_TYPES.has(data.testType)) return validationError('Tipe testcase tidak valid.');
+    if (data.priority !== undefined && !PRIORITIES.has(data.priority)) return validationError('Prioritas testcase tidak valid.');
+    if (data.testCaseId !== undefined && !cleanText(data.testCaseId)) return validationError('Test Case ID wajib diisi.');
+    if (data.page !== undefined && !cleanText(data.page)) return validationError('Page wajib diisi.');
+    if (data.testAction !== undefined && !cleanText(data.testAction)) return validationError('Test Action wajib diisi.');
+    if (data.steps !== undefined && !cleanText(data.steps)) return validationError('Steps wajib diisi.');
+    if (data.expectedResult !== undefined && !cleanText(data.expectedResult)) return validationError('Expected Result wajib diisi.');
+    if (data.testCaseId !== undefined) {
+      const duplicate = await db.testCase.findFirst({
+        where: {
+          projectId: current.projectId,
+          testCaseId: cleanText(data.testCaseId),
+          id: { not: id },
+        },
+        select: { id: true },
+      });
+      if (duplicate) return NextResponse.json({ error: `Test Case ID "${cleanText(data.testCaseId)}" sudah digunakan di project ini.` }, { status: 409 });
+    }
     let finalActualResult = data.actualResult !== undefined ? data.actualResult : current.actualResult;
 
     if (finalStatus === 'DONE') {
@@ -167,6 +255,10 @@ export async function PUT(req: NextRequest) {
 
     // Handle moduleId: convert empty string to null for Prisma
     const finalModuleId = data.moduleId === '' || data.moduleId === null ? null : data.moduleId;
+    if (finalModuleId) {
+      const moduleRecord = await db.module.findFirst({ where: { id: finalModuleId, projectId: current.projectId }, select: { id: true } });
+      if (!moduleRecord) return NextResponse.json({ error: 'Module tidak ditemukan pada project ini.' }, { status: 404 });
+    }
     // Handle subMenu: convert empty string to null
     const finalSubMenu = data.subMenu === '' ? null : data.subMenu;
     // Handle actualResult: convert empty string to null
@@ -180,14 +272,14 @@ export async function PUT(req: NextRequest) {
     const testCase = await db.testCase.update({
       where: { id },
       data: {
-        ...(data.testCaseId !== undefined && { testCaseId: data.testCaseId }),
-        ...(data.page !== undefined && { page: data.page }),
+        ...(data.testCaseId !== undefined && { testCaseId: cleanText(data.testCaseId) }),
+        ...(data.page !== undefined && { page: cleanText(data.page) }),
         ...(data.subMenu !== undefined && { subMenu: finalSubMenu }),
         ...(data.weight !== undefined && { weight: data.weight }),
         ...(data.testType !== undefined && { testType: data.testType }),
-        ...(data.testAction !== undefined && { testAction: data.testAction }),
-        ...(data.steps !== undefined && { steps: data.steps }),
-        ...(data.expectedResult !== undefined && { expectedResult: data.expectedResult }),
+        ...(data.testAction !== undefined && { testAction: cleanText(data.testAction) }),
+        ...(data.steps !== undefined && { steps: cleanText(data.steps) }),
+        ...(data.expectedResult !== undefined && { expectedResult: cleanText(data.expectedResult) }),
         ...(shouldWriteActualResult && { actualResult: finalActualResultForDb }),
         ...(data.stepLogs !== undefined && { stepLogs: data.stepLogs }),
         ...(finalStatus !== undefined && { status: finalStatus }),
@@ -260,7 +352,8 @@ export async function DELETE(req: NextRequest) {
     const ids = url.searchParams.get('ids');
 
     if (ids) {
-      const idList = ids.split(',');
+      const idList = ids.split(',').map(id => id.trim()).filter(Boolean);
+      if (idList.length === 0) return validationError('ID is required');
       const casesToDelete = await db.testCase.findMany({
         where: { id: { in: idList } },
         select: { id: true, projectId: true, page: true, subMenu: true },
@@ -282,11 +375,10 @@ export async function DELETE(req: NextRequest) {
 
     if (!id) return NextResponse.json({ error: 'ID is required' }, { status: 400 });
     const tc = await db.testCase.findUnique({ where: { id }, select: { projectId: true, page: true, subMenu: true } });
+    if (!tc) return NextResponse.json({ error: 'Test case not found' }, { status: 404 });
     await db.testCase.delete({ where: { id } });
 
-    if (tc) {
-      recalculateWeights(tc.projectId, tc.page, tc.subMenu).catch(() => {});
-    }
+    recalculateWeights(tc.projectId, tc.page, tc.subMenu).catch(() => {});
 
     return NextResponse.json({ deleted: 1 });
   } catch (error) {

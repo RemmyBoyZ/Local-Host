@@ -66,6 +66,10 @@ export async function GET(req: NextRequest) {
     if (!projectId) {
       return NextResponse.json({ error: 'projectId is required' }, { status: 400 });
     }
+    const project = await db.project.findUnique({ where: { id: projectId }, select: { id: true } });
+    if (!project) {
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    }
 
     const logsDir = path.join(process.cwd(), 'mini-services', 'logs');
     let entries: string[] = [];

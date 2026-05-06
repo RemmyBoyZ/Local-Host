@@ -1,6 +1,12 @@
 import { db } from '@/lib/db';
 import { NextRequest, NextResponse } from 'next/server';
 
+const cleanText = (value: unknown) => typeof value === 'string' ? value.trim() : '';
+const nullableText = (value: unknown) => {
+  const text = cleanText(value);
+  return text ? text : null;
+};
+
 export async function GET() {
   try {
     const projects = await db.project.findMany({
@@ -19,10 +25,13 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
+    const name = cleanText(body.name);
+    if (!name) return NextResponse.json({ error: 'Nama project wajib diisi' }, { status: 400 });
+
     const project = await db.project.create({
       data: {
-        name: body.name,
-        description: body.description || null,
+        name,
+        description: nullableText(body.description),
       },
     });
     return NextResponse.json(project, { status: 201 });
@@ -37,12 +46,18 @@ export async function PUT(req: NextRequest) {
     const body = await req.json();
     const { id, ...data } = body;
     if (!id) return NextResponse.json({ error: 'ID is required' }, { status: 400 });
+    if (data.name !== undefined && !cleanText(data.name)) {
+      return NextResponse.json({ error: 'Nama project wajib diisi' }, { status: 400 });
+    }
+    const existing = await db.project.findUnique({ where: { id }, select: { id: true } });
+    if (!existing) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+
     const project = await db.project.update({
       where: { id },
       data: {
-        ...(data.name !== undefined && { name: data.name }),
-        ...(data.description !== undefined && { description: data.description }),
-        ...(data.automationContext !== undefined && { automationContext: data.automationContext }),
+        ...(data.name !== undefined && { name: cleanText(data.name) }),
+        ...(data.description !== undefined && { description: nullableText(data.description) }),
+        ...(data.automationContext !== undefined && { automationContext: nullableText(data.automationContext) }),
       },
     });
     return NextResponse.json(project);
@@ -57,6 +72,8 @@ export async function DELETE(req: NextRequest) {
     const url = new URL(req.url);
     const id = url.searchParams.get('id');
     if (!id) return NextResponse.json({ error: 'ID is required' }, { status: 400 });
+    const existing = await db.project.findUnique({ where: { id }, select: { id: true } });
+    if (!existing) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
     await db.project.delete({ where: { id } });
     return NextResponse.json({ deleted: 1 });
   } catch (error) {

@@ -123,7 +123,10 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { testCaseId } = body;
 
-    if (!testCaseId) return NextResponse.json({ error: 'Test Case ID is required' }, { status: 400 });
+    if (!String(testCaseId || '').trim()) return NextResponse.json({ error: 'Test Case ID is required' }, { status: 400 });
+    if (!process.env.GROQ_API_KEY) {
+      return NextResponse.json({ error: 'GROQ_API_KEY belum dikonfigurasi.' }, { status: 503 });
+    }
 
     const requestedId = String(testCaseId).trim();
 

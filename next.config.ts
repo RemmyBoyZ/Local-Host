@@ -1,5 +1,13 @@
 import type { NextConfig } from "next";
 
+const devWatchIgnored = [
+  '**/mini-services/logs/**',
+  '**/mini-services/logs/**/*.jsonl',
+  '**/mini-services/recordings/**',
+  '**/mini-services/recordings/**/*',
+  '**/prisma/db/**',
+];
+
 const nextConfig: NextConfig = {
   output: "standalone",
   /* config options here */
@@ -14,9 +22,7 @@ const nextConfig: NextConfig = {
         ...config.watchOptions,
         ignored: [
           ...(Array.isArray(config.watchOptions?.ignored) ? config.watchOptions.ignored : []),
-          '**/mini-services/logs/**',
-          '**/mini-services/logs/**/*.jsonl',
-          '**/prisma/db/**',
+          ...devWatchIgnored,
         ],
       };
     }

@@ -1,20 +1,38 @@
 import { db } from '@/lib/db';
 import { NextRequest, NextResponse } from 'next/server';
 
+const BUGFIX_SORT_FIELDS = new Set(['createdAt', 'updatedAt', 'testCaseId', 'page', 'status', 'priority']);
+const BUGFIX_STATUSES = new Set(['SUDAH DILAPORKAN', 'SEDANG DI FIX', 'READY TO RETEST', 'VERIFIED & FIXED']);
+const EDITABLE_BUGFIX_STATUSES = new Set(['SUDAH DILAPORKAN', 'SEDANG DI FIX', 'READY TO RETEST']);
+
+function parsePositiveInt(value: string | null, fallback: number, max: number) {
+  const parsed = Number.parseInt(value || '', 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, max);
+}
+
 export async function GET(req: NextRequest) {
   try {
     const url = new URL(req.url);
     const projectId = url.searchParams.get('projectId');
     const status = url.searchParams.get('status');
     const search = url.searchParams.get('search');
-    const page = parseInt(url.searchParams.get('page') || '1');
-    const limit = parseInt(url.searchParams.get('limit') || '50');
-    const sortBy = url.searchParams.get('sortBy') || 'createdAt';
-    const sortOrder = url.searchParams.get('sortOrder') || 'desc';
+    const page = parsePositiveInt(url.searchParams.get('page'), 1, 100000);
+    const limit = parsePositiveInt(url.searchParams.get('limit'), 50, 200);
+    const requestedSortBy = url.searchParams.get('sortBy') || 'createdAt';
+    const sortBy = BUGFIX_SORT_FIELDS.has(requestedSortBy) ? requestedSortBy : 'createdAt';
+    const sortOrder = url.searchParams.get('sortOrder') === 'asc' ? 'asc' : 'desc';
 
     const where: Record<string, unknown> = {};
-    if (projectId) where.projectId = projectId;
-    if (status) where.status = status;
+    if (projectId) {
+      const project = await db.project.findUnique({ where: { id: projectId }, select: { id: true } });
+      if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+      where.projectId = projectId;
+    }
+    if (status) {
+      if (!BUGFIX_STATUSES.has(status)) return NextResponse.json({ error: 'Status bug fix tidak valid.' }, { status: 400 });
+      where.status = status;
+    }
     if (search) {
       where.OR = [
         { testCaseId: { contains: search } },
@@ -75,8 +93,7 @@ export async function PUT(req: NextRequest) {
     // Update timestamps based on status change
     const updateData: Record<string, unknown> = {};
     if (data.status !== undefined) {
-      const allowedBugFixStatuses = ['SUDAH DILAPORKAN', 'SEDANG DI FIX', 'READY TO RETEST'];
-      if (!allowedBugFixStatuses.includes(data.status)) {
+      if (!EDITABLE_BUGFIX_STATUSES.has(data.status)) {
         return NextResponse.json(
           { error: 'Bug fix hanya bisa diproses sampai READY TO RETEST. Verified & Fixed dilakukan dari halaman Test Case setelah retest berhasil.' },
           { status: 400 }
@@ -95,10 +112,16 @@ export async function PUT(req: NextRequest) {
       if (data.status === 'READY TO RETEST') {
         updateData.readyAt = now;
         // Sync: update the original test case status to READY TO RETEST
-        await db.testCase.update({
+        const updateResult = await db.testCase.updateMany({
           where: { id: current.sourceTestCaseId },
           data: { status: 'READY TO RETEST', progress: 50 },
         });
+        if (updateResult.count === 0) {
+          return NextResponse.json(
+            { error: 'Original test case tidak ditemukan. Bug fix ini tidak bisa dikirim ke Ready to Retest.' },
+            { status: 404 }
+          );
+        }
       }
     }
 
@@ -122,12 +145,15 @@ export async function DELETE(req: NextRequest) {
     const ids = url.searchParams.get('ids');
 
     if (ids) {
-      const idList = ids.split(',');
+      const idList = ids.split(',').map(item => item.trim()).filter(Boolean);
+      if (idList.length === 0) return NextResponse.json({ error: 'ID is required' }, { status: 400 });
       await db.bugFix.deleteMany({ where: { id: { in: idList } } });
       return NextResponse.json({ deleted: idList.length });
     }
 
     if (!id) return NextResponse.json({ error: 'ID is required' }, { status: 400 });
+    const existing = await db.bugFix.findUnique({ where: { id }, select: { id: true } });
+    if (!existing) return NextResponse.json({ error: 'Bug fix item not found' }, { status: 404 });
     await db.bugFix.delete({ where: { id } });
     return NextResponse.json({ deleted: 1 });
   } catch (error) {

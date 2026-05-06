@@ -108,6 +108,9 @@ export async function POST(req: NextRequest) {
     if (!testCase?.id) {
       return NextResponse.json({ error: 'Test case is required' }, { status: 400 });
     }
+    if (!process.env.GROQ_API_KEY) {
+      return NextResponse.json({ error: 'GROQ_API_KEY belum dikonfigurasi.' }, { status: 503 });
+    }
 
     const refineInstruction = REFINE_MODES[mode] || REFINE_MODES.format;
     const compactCase = {
@@ -167,7 +170,12 @@ Return JSON now. Make every field useful for manual QA execution.`;
     }
 
     const content = completion.choices[0]?.message?.content || '{}';
-    const parsed = JSON.parse(content);
+    let parsed;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      return NextResponse.json({ error: 'AI mengembalikan format yang tidak valid. Silakan coba lagi.' }, { status: 502 });
+    }
     const refined = parsed.refined || {};
 
     let cleaned = {

@@ -32,9 +32,16 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { projectId, userPrompt, moduleFilter } = body;
     const requestedCount = Math.min(Math.max(Number(body.count || 4), 1), 8);
+    const prompt = String(userPrompt || '').trim();
 
     if (!projectId) return NextResponse.json({ error: 'Project ID is required' }, { status: 400 });
-    if (!userPrompt) return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
+    if (!prompt) return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
+    if (!process.env.GROQ_API_KEY) {
+      return NextResponse.json({ error: 'GROQ_API_KEY belum dikonfigurasi.' }, { status: 503 });
+    }
+
+    const project = await db.project.findUnique({ where: { id: projectId }, select: { id: true } });
+    if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
     const existingTestCases = await db.testCase.findMany({
       where: {
@@ -58,6 +65,9 @@ export async function POST(req: NextRequest) {
       where: { projectId },
     });
     const selectedModuleId = moduleFilter && moduleFilter !== 'all' ? String(moduleFilter) : null;
+    if (selectedModuleId && !projectModules.some(module => module.id === selectedModuleId)) {
+      return NextResponse.json({ error: 'Module tidak ditemukan pada project ini.' }, { status: 404 });
+    }
     const idSequence = await getNextIdSequence(projectId, selectedModuleId, requestedCount);
 
     // Build context
@@ -86,7 +96,7 @@ ${contextSummary}
 Next testCaseId values to use exactly in order: ${idSequence.nextIds.join(', ')}
 Available Modules (Use IDs only): ${projectModules.map(m => `${m.name}(id:${m.id})`).join(', ')}
 
-User Request: ${userPrompt}
+User Request: ${prompt}
 
 Return JSON with "test_cases" key:`;
 
@@ -110,7 +120,12 @@ Return JSON with "test_cases" key:`;
     }
 
     const aiResponse = completion.choices[0]?.message?.content || '{}';
-    const parsed = JSON.parse(aiResponse);
+    let parsed;
+    try {
+      parsed = JSON.parse(aiResponse);
+    } catch {
+      return NextResponse.json({ error: 'AI mengembalikan format yang tidak valid. Silakan coba lagi.' }, { status: 502 });
+    }
     const generatedCases: GeneratedTestCase[] = parsed.test_cases || [];
 
     if (!Array.isArray(generatedCases) || generatedCases.length === 0) {

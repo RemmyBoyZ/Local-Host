@@ -79,43 +79,58 @@ export function TestCaseDialog({
 
   // Initialize form when editingTestCase changes or dialog opens
   useEffect(() => {
-    if (open) {
-      if (editingTestCase) {
-        const nextFormData = {
-          testCaseId: editingTestCase.testCaseId || '',
-          page: editingTestCase.page || '',
-          subMenu: editingTestCase.subMenu || '',
-          weight: editingTestCase.weight || '',
-          testType: editingTestCase.testType || 'Positive',
-          testAction: editingTestCase.testAction || '',
-          steps: editingTestCase.steps || '',
-          expectedResult: editingTestCase.expectedResult || '',
-          actualResult: editingTestCase.actualResult || '',
-          status: editingTestCase.status || 'NOT DONE',
-          progress: editingTestCase.progress || 0,
-          remarks: editingTestCase.remarks || '',
-          priority: editingTestCase.priority || 'Medium',
-          moduleId: editingTestCase.moduleId || '',
-        };
-        queueMicrotask(() => setFormData(nextFormData));
-      } else {
-        queueMicrotask(() => setFormData(EMPTY_TEST_CASE));
-      }
+    if (!open) return;
+
+    const nextFormData = editingTestCase ? {
+      testCaseId: editingTestCase.testCaseId || '',
+      page: editingTestCase.page || '',
+      subMenu: editingTestCase.subMenu || '',
+      weight: editingTestCase.weight || '',
+      testType: editingTestCase.testType || 'Positive',
+      testAction: editingTestCase.testAction || '',
+      steps: editingTestCase.steps || '',
+      expectedResult: editingTestCase.expectedResult || '',
+      actualResult: editingTestCase.actualResult || '',
+      status: editingTestCase.status || 'NOT DONE',
+      progress: editingTestCase.progress || 0,
+      remarks: editingTestCase.remarks || '',
+      priority: editingTestCase.priority || 'Medium',
+      moduleId: editingTestCase.moduleId || '',
+    } : EMPTY_TEST_CASE;
+
+    const timer = window.setTimeout(() => {
+      setFormData(nextFormData);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timer);
     }
   }, [open, editingTestCase]);
 
   const handleSaveTestCase = async () => {
-    if (!formData.testCaseId || !formData.page || !formData.testAction || !formData.steps || !formData.expectedResult) {
+    if (
+      !formData.testCaseId.trim()
+      || !formData.page.trim()
+      || !formData.testAction.trim()
+      || !formData.steps.trim()
+      || !formData.expectedResult.trim()
+    ) {
       toast({ title: 'Error', description: 'Mohon isi field yang wajib (*)', variant: 'destructive' });
       return;
     }
 
     const payload = {
       ...formData,
+      testCaseId: formData.testCaseId.trim(),
+      page: formData.page.trim(),
+      testAction: formData.testAction.trim(),
+      steps: formData.steps.trim(),
+      expectedResult: formData.expectedResult.trim(),
       projectId: selectedProject,
       moduleId: formData.moduleId || null,
       actualResult: formData.actualResult || null,
-      subMenu: formData.subMenu || null,
+      subMenu: formData.subMenu.trim() || null,
+      remarks: formData.remarks.trim() || null,
     };
 
     try {

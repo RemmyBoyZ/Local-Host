@@ -13,7 +13,9 @@ const cdpSessions = new Map();
 
 // Ensure logs directory exists
 const LOGS_DIR = path.join(__dirname, 'logs');
-const RECORDINGS_DIR = path.join(__dirname, 'recordings');
+const RUNTIME_DIR = process.env.QA_RUNTIME_DIR
+  || path.join(process.env.LOCALAPPDATA || os.tmpdir(), 'web-qa-runtime');
+const RECORDINGS_DIR = path.join(RUNTIME_DIR, 'recordings');
 if (!fs.existsSync(LOGS_DIR)) {
   fs.mkdirSync(LOGS_DIR, { recursive: true });
 }
@@ -89,10 +91,12 @@ function saveLog(logData) {
     ...logData,
     timestamp: logData.timestamp || new Date().toISOString()
   }) + '\n';
-  
-  fs.appendFile(current, logEntry, (err) => {
-    if (err) console.error(`Failed to save log for ${logData.testCaseId}:`, err);
-  });
+
+  try {
+    fs.appendFileSync(current, logEntry);
+  } catch (err) {
+    console.error(`Failed to save log for ${logData.testCaseId}:`, err);
+  }
 }
 
 function sendJson(res, status, payload) {
@@ -200,6 +204,15 @@ function findBrowserPath() {
     path.join(process.env['ProgramFiles(x86)'] || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
   ];
   return candidates.find(candidate => candidate && fs.existsSync(candidate));
+}
+
+function isValidHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 function httpJson(url, timeoutMs = 5000) {
@@ -637,6 +650,9 @@ const server = http.createServer((req, res) => {
       if (!testCaseId || !sessionId) {
         return sendJson(res, 400, { success: false, error: 'testCaseId and sessionId are required' });
       }
+      if (targetUrl && !isValidHttpUrl(targetUrl)) {
+        return sendJson(res, 400, { success: false, error: 'targetUrl must be a valid http/https URL' });
+      }
 
       for (const [id, session] of activeManualSessions.entries()) {
         if (session.testCaseId === testCaseId && session.active) {
@@ -731,7 +747,8 @@ const server = http.createServer((req, res) => {
       const paths = getRecordingPaths(testCaseId, sessionId);
       const framePath = path.resolve(paths.framesDir, file);
       const frameRoot = path.resolve(paths.framesDir);
-      if (!framePath.startsWith(frameRoot) || !fs.existsSync(framePath)) {
+      const relativeFramePath = path.relative(frameRoot, framePath);
+      if (relativeFramePath.startsWith('..') || path.isAbsolute(relativeFramePath) || !fs.existsSync(framePath)) {
         return sendJson(res, 404, { success: false, error: 'Frame not found' });
       }
       res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store' });
