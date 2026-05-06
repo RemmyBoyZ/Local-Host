@@ -16,6 +16,7 @@ const LOGS_DIR = path.join(__dirname, 'logs');
 const RUNTIME_DIR = process.env.QA_RUNTIME_DIR
   || path.join(process.env.LOCALAPPDATA || os.tmpdir(), 'web-qa-runtime');
 const RECORDINGS_DIR = path.join(RUNTIME_DIR, 'recordings');
+const LEGACY_RECORDINGS_DIR = path.join(__dirname, 'recordings');
 if (!fs.existsSync(LOGS_DIR)) {
   fs.mkdirSync(LOGS_DIR, { recursive: true });
 }
@@ -301,6 +302,17 @@ function getRecordingPaths(testCaseId, sessionId) {
   };
 }
 
+function getLegacyRecordingPaths(testCaseId, sessionId) {
+  const safeTestCaseId = encodeURIComponent(testCaseId);
+  const safeSessionId = encodeURIComponent(sessionId);
+  const baseDir = path.join(LEGACY_RECORDINGS_DIR, safeTestCaseId, safeSessionId);
+  return {
+    baseDir,
+    framesDir: path.join(baseDir, 'frames'),
+    metadata: path.join(baseDir, 'metadata.json'),
+  };
+}
+
 function buildRecordingFrameUrl(testCaseId, sessionId, file) {
   return `/recordings/${encodeURIComponent(testCaseId)}/${encodeURIComponent(sessionId)}/frames/${encodeURIComponent(file)}`;
 }
@@ -402,29 +414,40 @@ function stopFrameRecorder(recording) {
 }
 
 function readRecordingMetadata(testCaseId, sessionId) {
-  const paths = getRecordingPaths(testCaseId, sessionId);
-  if (!fs.existsSync(paths.metadata)) return null;
-  try {
-    return JSON.parse(fs.readFileSync(paths.metadata, 'utf8'));
-  } catch {
-    return null;
+  for (const paths of [getRecordingPaths(testCaseId, sessionId), getLegacyRecordingPaths(testCaseId, sessionId)]) {
+    if (!fs.existsSync(paths.metadata)) continue;
+    try {
+      return JSON.parse(fs.readFileSync(paths.metadata, 'utf8'));
+    } catch {
+      return null;
+    }
   }
+  return null;
 }
 
 function getLatestRecordingMetadata(testCaseId) {
-  const testCaseDir = path.join(RECORDINGS_DIR, encodeURIComponent(testCaseId));
-  if (!fs.existsSync(testCaseDir)) return null;
+  const roots = [RECORDINGS_DIR, LEGACY_RECORDINGS_DIR];
+  const metadataItems = [];
 
-  const sessionDirs = fs.readdirSync(testCaseDir, { withFileTypes: true })
-    .filter(entry => entry.isDirectory())
-    .map(entry => path.join(testCaseDir, entry.name))
-    .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+  for (const root of roots) {
+    const testCaseDir = path.join(root, encodeURIComponent(testCaseId));
+    if (!fs.existsSync(testCaseDir)) continue;
 
-  for (const sessionDir of sessionDirs) {
-    const metadataPath = path.join(sessionDir, 'metadata.json');
-    if (!fs.existsSync(metadataPath)) continue;
+    const sessionDirs = fs.readdirSync(testCaseDir, { withFileTypes: true })
+      .filter(entry => entry.isDirectory())
+      .map(entry => path.join(testCaseDir, entry.name));
+
+    for (const sessionDir of sessionDirs) {
+      const metadataPath = path.join(sessionDir, 'metadata.json');
+      if (!fs.existsSync(metadataPath)) continue;
+      metadataItems.push({ metadataPath, mtimeMs: fs.statSync(metadataPath).mtimeMs });
+    }
+  }
+
+  metadataItems.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  for (const item of metadataItems) {
     try {
-      return JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+      return JSON.parse(fs.readFileSync(item.metadataPath, 'utf8'));
     } catch (_) {}
   }
   return null;
@@ -744,11 +767,17 @@ const server = http.createServer((req, res) => {
     }
 
     if (testCaseId && sessionId && type === 'frames' && file) {
-      const paths = getRecordingPaths(testCaseId, sessionId);
-      const framePath = path.resolve(paths.framesDir, file);
-      const frameRoot = path.resolve(paths.framesDir);
-      const relativeFramePath = path.relative(frameRoot, framePath);
-      if (relativeFramePath.startsWith('..') || path.isAbsolute(relativeFramePath) || !fs.existsSync(framePath)) {
+      let framePath = null;
+      for (const paths of [getRecordingPaths(testCaseId, sessionId), getLegacyRecordingPaths(testCaseId, sessionId)]) {
+        const candidatePath = path.resolve(paths.framesDir, file);
+        const frameRoot = path.resolve(paths.framesDir);
+        const relativeFramePath = path.relative(frameRoot, candidatePath);
+        if (!relativeFramePath.startsWith('..') && !path.isAbsolute(relativeFramePath) && fs.existsSync(candidatePath)) {
+          framePath = candidatePath;
+          break;
+        }
+      }
+      if (!framePath) {
         return sendJson(res, 404, { success: false, error: 'Frame not found' });
       }
       res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store' });
@@ -757,17 +786,31 @@ const server = http.createServer((req, res) => {
 
     sendJson(res, 404, { success: false, error: 'Recording not found' });
   } else if (req.method === 'GET' && requestUrl.pathname.startsWith('/logs/')) {
-    // Ambil history: hanya run sebelumnya, bukan current run.
+    // run=current/latest mengambil run terbaru; run=previous/history mengambil satu run sebelumnya.
+    // Tanpa query, fallback ke previous lalu current agar UI lama tidak 404 ketika baru ada satu run.
     const tcId = decodeURIComponent(requestUrl.pathname.split('/').pop());
-    const { previous, legacy } = getRunPaths(tcId);
-    const filePath = fs.existsSync(previous) ? previous : legacy;
+    const run = requestUrl.searchParams.get('run') || 'auto';
+    const { current, previous, legacy } = getRunPaths(tcId);
+    const candidates = run === 'current' || run === 'latest'
+      ? [{ kind: 'current', filePath: current }]
+      : run === 'previous' || run === 'history'
+        ? [{ kind: 'previous', filePath: previous }, { kind: 'legacy', filePath: legacy }]
+        : [
+            { kind: 'previous', filePath: previous },
+            { kind: 'current', filePath: current },
+            { kind: 'legacy', filePath: legacy },
+          ];
+    const found = candidates.find(candidate => fs.existsSync(candidate.filePath));
     
-    if (fs.existsSync(filePath)) {
-      res.writeHead(200, { 'Content-Type': 'application/x-jsonlines' });
-      fs.createReadStream(filePath).pipe(res);
+    if (found) {
+      res.writeHead(200, {
+        'Content-Type': 'application/x-jsonlines',
+        'X-QA-Log-Run': found.kind,
+      });
+      fs.createReadStream(found.filePath).pipe(res);
     } else {
       res.writeHead(404);
-      res.end('No previous run logs found for this test case');
+      res.end(`No ${run === 'auto' ? 'saved' : run} logs found for this test case`);
     }
   } else {
     res.writeHead(404);

@@ -131,6 +131,7 @@ interface TestCaseDetailDialogProps {
   activeDevLogTab: DevLogTab;
   expandedLogId: string | null;
   isLoadingHistory: boolean;
+  loadedRunLabel: 'current' | 'previous' | 'live';
   aiSummary: string | null;
   isSummarizing: boolean;
   manualCaptureTargetUrl: string;
@@ -147,6 +148,7 @@ interface TestCaseDetailDialogProps {
   clearLogs: () => void;
   startManualCapture: () => void;
   stopManualCapture: () => void;
+  loadCurrentLogRun: () => void;
   generateAISummary: () => void;
   loadLogHistory: () => void;
   filterConsoleLogs: (logs: LogEntry[]) => LogEntry[];
@@ -169,6 +171,7 @@ export function TestCaseDetailDialog({
   activeDevLogTab,
   expandedLogId,
   isLoadingHistory,
+  loadedRunLabel,
   aiSummary,
   isSummarizing,
   manualCaptureTargetUrl,
@@ -185,6 +188,7 @@ export function TestCaseDetailDialog({
   clearLogs,
   startManualCapture,
   stopManualCapture,
+  loadCurrentLogRun,
   generateAISummary,
   loadLogHistory,
   filterConsoleLogs,
@@ -707,9 +711,18 @@ export function TestCaseDetailDialog({
                         </Button>
                         <Separator orientation="vertical" className="h-4 mx-1" />
                         <Button
-                          variant="ghost"
+                          variant={loadedRunLabel === 'current' || loadedRunLabel === 'live' ? 'default' : 'ghost'}
                           size="sm"
-                          className="h-7 px-2 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 gap-1"
+                          className={`h-7 px-2 text-[9px] font-bold ${loadedRunLabel === 'current' || loadedRunLabel === 'live' ? 'bg-white text-slate-800 shadow-sm hover:bg-white' : 'text-slate-500 hover:text-emerald-600 hover:bg-emerald-50'}`}
+                          onClick={loadCurrentLogRun}
+                          disabled={isLoadingHistory}
+                        >
+                          CURRENT
+                        </Button>
+                        <Button
+                          variant={loadedRunLabel === 'previous' ? 'default' : 'ghost'}
+                          size="sm"
+                          className={`h-7 px-2 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 gap-1 ${loadedRunLabel === 'previous' ? 'bg-white text-slate-800 shadow-sm hover:bg-white' : ''}`}
                           onClick={loadLogHistory}
                           disabled={isLoadingHistory}
                         >
@@ -718,7 +731,7 @@ export function TestCaseDetailDialog({
                           ) : (
                             <History className="w-3.5 h-3.5" />
                           )}
-                          <span className="text-[9px] font-bold">HISTORY</span>
+                          <span className="text-[9px] font-bold">PREVIOUS</span>
                         </Button>
                         <Button
                           variant="ghost"

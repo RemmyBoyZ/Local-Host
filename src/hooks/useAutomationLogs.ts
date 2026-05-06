@@ -97,6 +97,20 @@ export const filterNetworkLogs = (logs: AutomationLogEntry[]) => logs.filter(log
   return !isStaticAsset;
 });
 
+function parseJsonlLogs(text: string) {
+  return text
+    .split('\n')
+    .filter(line => line.trim())
+    .map(line => {
+      try {
+        return normalizeLogEntry(JSON.parse(line));
+      } catch {
+        return null;
+      }
+    })
+    .filter((log): log is AutomationLogEntry => log !== null);
+}
+
 export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
   viewTestCase,
   setViewTestCase,
@@ -109,6 +123,7 @@ export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
   const [activeDevLogTab, setActiveDevLogTab] = useState<DevLogTab>('execution');
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [loadedRunLabel, setLoadedRunLabel] = useState<'current' | 'previous' | 'live'>('live');
   const [aiSummary, setAiSummary] = useState<string | null>(null);
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [manualCaptureTargetUrl, setManualCaptureTargetUrl] = useState('');
@@ -118,18 +133,6 @@ export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
   const [isStoppingManualCapture, setIsStoppingManualCapture] = useState(false);
 
   const isManualCaptureActive = !!manualCaptureSessionId;
-
-  useEffect(() => {
-    currentViewIdRef.current = viewTestCase?.id || null;
-
-    if (!viewTestCase?.id) return;
-
-    setLiveLogs([]);
-    setExpandedLogId(null);
-    setAiSummary(null);
-    setManualRecording(null);
-    setActiveDevLogTab('execution');
-  }, [viewTestCase?.id]);
 
   const loadLatestRecording = async (testCaseId = viewTestCase?.id) => {
     if (!testCaseId) return null;
@@ -148,6 +151,42 @@ export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
       return null;
     }
   };
+
+  const loadCurrentRun = async (testCaseId = viewTestCase?.id) => {
+    if (!testCaseId) return null;
+
+    try {
+      const response = await fetch(`http://127.0.0.1:3001/logs/${encodeURIComponent(testCaseId)}?run=current`);
+      if (!response.ok) return null;
+
+      const logs = parseJsonlLogs(await response.text());
+      const visibleLogs = logs.length > 500 ? logs.slice(logs.length - 500) : logs;
+      setLiveLogs(visibleLogs);
+      setLoadedRunLabel('current');
+      return visibleLogs;
+    } catch {
+      return null;
+    }
+  };
+
+  useEffect(() => {
+    currentViewIdRef.current = viewTestCase?.id || null;
+
+    if (!viewTestCase?.id) return;
+    const targetId = viewTestCase.id;
+
+    const timer = window.setTimeout(() => {
+      setLiveLogs([]);
+      setExpandedLogId(null);
+      setAiSummary(null);
+      setManualRecording(null);
+      setActiveDevLogTab('execution');
+      loadCurrentRun(targetId);
+      loadLatestRecording(targetId);
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [viewTestCase?.id]);
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -173,6 +212,7 @@ export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
             const next = [...prev, logEntry];
             return next.length > 500 ? next.slice(next.length - 500) : next;
           });
+          setLoadedRunLabel('live');
 
           if (logEntry.isExecution) {
             const logText = typeof message.log === 'string' ? message.log : JSON.stringify(message.log);
@@ -242,29 +282,41 @@ export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
     }
   }, [liveLogs]);
 
+  const loadCurrentLogRun = async () => {
+    if (!viewTestCase?.id) return;
+    setIsLoadingHistory(true);
+    try {
+      const logs = await loadCurrentRun(viewTestCase.id);
+      await loadLatestRecording(viewTestCase.id);
+      if (!logs) throw new Error('Run terbaru belum ditemukan.');
+      toast({
+        title: 'Current Run Dimuat',
+        description: `Berhasil memuat ${logs.length} entri log dari run terbaru.`,
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Gagal memuat current run',
+        description: error.message,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  };
+
   const loadLogHistory = async () => {
     if (!viewTestCase?.id) return;
     const targetId = viewTestCase.id;
 
     setIsLoadingHistory(true);
     try {
-      const response = await fetch(`http://localhost:3001/logs/${viewTestCase.id}`);
-      if (!response.ok) throw new Error('Riwayat run sebelumnya tidak ditemukan');
+      const response = await fetch(`http://127.0.0.1:3001/logs/${encodeURIComponent(viewTestCase.id)}?run=previous`);
+      if (!response.ok) throw new Error('Riwayat run sebelumnya belum ada. Run terbaru sudah dimuat otomatis jika tersedia.');
 
-      const text = await response.text();
-      const logs = text
-        .split('\n')
-        .filter(line => line.trim())
-        .map(line => {
-          try {
-            return normalizeLogEntry(JSON.parse(line));
-          } catch {
-            return null;
-          }
-        })
-        .filter((log): log is AutomationLogEntry => log !== null);
+      const logs = parseJsonlLogs(await response.text());
 
-      setLiveLogs(logs);
+      setLiveLogs(logs.length > 500 ? logs.slice(logs.length - 500) : logs);
+      setLoadedRunLabel('previous');
       loadLatestRecording(targetId);
       toast({
         title: 'History Run Sebelumnya Dimuat',
@@ -413,6 +465,7 @@ export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
     activeDevLogTab,
     expandedLogId,
     isLoadingHistory,
+    loadedRunLabel,
     aiSummary,
     isSummarizing,
     manualCaptureTargetUrl,
@@ -429,6 +482,7 @@ export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
     clearLogs,
     startManualCapture,
     stopManualCapture,
+    loadCurrentLogRun,
     loadLatestRecording,
     generateAISummary,
     loadLogHistory,

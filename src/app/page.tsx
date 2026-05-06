@@ -303,6 +303,7 @@ export default function TestCaseManager() {
     activeDevLogTab,
     expandedLogId,
     isLoadingHistory,
+    loadedRunLabel,
     aiSummary,
     isSummarizing,
     manualCaptureTargetUrl,
@@ -319,6 +320,7 @@ export default function TestCaseManager() {
     clearLogs,
     startManualCapture,
     stopManualCapture,
+    loadCurrentLogRun,
     generateAISummary,
     loadLogHistory,
     filterConsoleLogs,
@@ -1218,6 +1220,7 @@ export default function TestCaseManager() {
         activeDevLogTab={activeDevLogTab}
         expandedLogId={expandedLogId}
         isLoadingHistory={isLoadingHistory}
+        loadedRunLabel={loadedRunLabel}
         aiSummary={aiSummary}
         isSummarizing={isSummarizing}
         manualCaptureTargetUrl={manualCaptureTargetUrl}
@@ -1234,6 +1237,7 @@ export default function TestCaseManager() {
         clearLogs={clearLogs}
         startManualCapture={startManualCapture}
         stopManualCapture={stopManualCapture}
+        loadCurrentLogRun={loadCurrentLogRun}
         generateAISummary={generateAISummary}
         loadLogHistory={loadLogHistory}
         filterConsoleLogs={filterConsoleLogs}
