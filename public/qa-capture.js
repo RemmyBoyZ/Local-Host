@@ -24,6 +24,26 @@
     return text.slice(0, maxTextLength) + '... [truncated]';
   }
 
+  function compactNetworkUrl(value) {
+    var text = String(value || '');
+    if (text.indexOf('data:') === 0) {
+      var commaIndex = text.indexOf(',');
+      var mediaType = text.slice(0, Math.min(commaIndex > 0 ? commaIndex : 80, 80));
+      return (mediaType || 'data:') + ',[omitted ' + text.length + ' chars]';
+    }
+    if (text.indexOf('blob:') === 0) return 'blob:[omitted]';
+    return truncate(text);
+  }
+
+  function shouldSkipNetworkBody(method, url) {
+    var normalizedMethod = String(method || '').toUpperCase();
+    var normalizedUrl = String(url || '');
+    if (normalizedMethod === 'OPTIONS') return true;
+    if (normalizedUrl.indexOf('data:') === 0 || normalizedUrl.indexOf('blob:') === 0) return true;
+    return /\.(js|css|png|jpe?g|svg|gif|webp|ico|woff2?|ttf|map)([?#].*)?$/i.test(normalizedUrl)
+      || /\/(assets|public|media|images)\//i.test(normalizedUrl);
+  }
+
   function safeStringify(value) {
     try {
       return JSON.stringify(value);
@@ -98,6 +118,118 @@
     } catch (_) {}
   }
 
+  function cleanText(value, maxLength) {
+    var text = String(value || '').replace(/\s+/g, ' ').trim();
+    var limit = maxLength || 140;
+    return text.length > limit ? text.slice(0, limit) + '...' : text;
+  }
+
+  function isSensitiveElement(element) {
+    var type = String(element && element.type || '').toLowerCase();
+    var name = String(element && (element.name || element.id || element.getAttribute && element.getAttribute('aria-label')) || '');
+    return type === 'password' || /password|passwd|pwd|pin|token|secret|otp/i.test(name);
+  }
+
+  function cssEscape(value) {
+    if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(String(value));
+    return String(value).replace(/["\\]/g, '\\$&');
+  }
+
+  function getElementLabel(element) {
+    if (!element || !element.getAttribute) return '';
+    var aria = cleanText(element.getAttribute('aria-label') || element.getAttribute('title') || element.getAttribute('placeholder') || '', 120);
+    if (aria) return aria;
+
+    if (element.id) {
+      var label = document.querySelector('label[for="' + cssEscape(element.id) + '"]');
+      if (label) {
+        var labelText = cleanText(label.innerText || label.textContent || '', 120);
+        if (labelText) return labelText;
+      }
+    }
+
+    var wrappedLabel = element.closest && element.closest('label');
+    if (wrappedLabel) {
+      var wrappedText = cleanText(wrappedLabel.innerText || wrappedLabel.textContent || '', 120);
+      if (wrappedText) return wrappedText;
+    }
+
+    return cleanText(element.innerText || element.textContent || element.value || element.name || element.id || element.tagName || '', 120);
+  }
+
+  function getElementSelector(element) {
+    if (!element || !element.tagName) return '';
+    var parts = [];
+    var current = element;
+    while (current && current.nodeType === 1 && parts.length < 4) {
+      var part = current.tagName.toLowerCase();
+      if (current.id) {
+        part += '#' + current.id;
+        parts.unshift(part);
+        break;
+      }
+      if (current.name) part += '[name="' + String(current.name).replace(/"/g, '\\"') + '"]';
+      else if (current.getAttribute('data-testid')) part += '[data-testid="' + String(current.getAttribute('data-testid')).replace(/"/g, '\\"') + '"]';
+      else if (current.className && typeof current.className === 'string') {
+        var className = current.className.trim().split(/\s+/).slice(0, 2).join('.');
+        if (className) part += '.' + className;
+      }
+      parts.unshift(part);
+      current = current.parentElement;
+    }
+    return parts.join(' > ');
+  }
+
+  function getElementValue(element) {
+    if (!element) return '';
+    if (isSensitiveElement(element)) return '[REDACTED]';
+    if (element.type === 'checkbox' || element.type === 'radio') return element.checked ? 'checked' : 'unchecked';
+    return cleanText(element.value || '', 220);
+  }
+
+  function emitDetailStep(action, element, valueOverride) {
+    if (!element || !element.tagName) return;
+    var step = {
+      action: action,
+      label: getElementLabel(element),
+      value: valueOverride !== undefined ? valueOverride : getElementValue(element),
+      selector: getElementSelector(element),
+      tagName: element.tagName.toLowerCase(),
+      inputType: element.type || '',
+      url: window.location.href,
+    };
+
+    sendLog({
+      source: 'manual-step',
+      detailStep: step,
+      log: (action === 'click' ? 'Click' : 'Input') + (step.label ? ': ' + step.label : ''),
+    });
+  }
+
+  var inputTimers = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
+
+  document.addEventListener('click', function (event) {
+    var target = event.target && event.target.closest
+      ? event.target.closest('button,a,input,textarea,select,[role="button"],[role="menuitem"],[data-testid]')
+      : event.target;
+    emitDetailStep('click', target, getElementValue(target));
+  }, true);
+
+  document.addEventListener('input', function (event) {
+    var target = event.target;
+    if (!target || !/input|textarea|select/i.test(target.tagName || '')) return;
+    var send = function () { emitDetailStep('input', target, getElementValue(target)); };
+    if (!inputTimers) return send();
+    clearTimeout(inputTimers.get(target));
+    inputTimers.set(target, setTimeout(send, 450));
+  }, true);
+
+  document.addEventListener('change', function (event) {
+    var target = event.target;
+    if (!target || !/input|textarea|select/i.test(target.tagName || '')) return;
+    emitDetailStep('change', target, getElementValue(target));
+  }, true);
+
   function serializeConsoleArgs(args) {
     return Array.prototype.slice.call(args).map(function (arg) {
       if (arg instanceof Error) {
@@ -148,17 +280,18 @@
       var method = (init && init.method) || (input && input.method) || 'GET';
       var headers = headersToObject((init && init.headers) || (input && input.headers));
       var requestBody = init && init.body ? truncate(init.body) : undefined;
+      var logUrl = compactNetworkUrl(requestUrl || '');
 
       return originalFetch(input, init).then(function (response) {
         var duration = Date.now() - startedAt;
         try {
-          response.clone().text().then(function (text) {
+          var emitNetworkLog = function (responseBody) {
             sendLog({
               log: 'Network Trace',
               network: {
                 event: 'Response',
                 method: method,
-                url: requestUrl || response.url,
+                url: logUrl || compactNetworkUrl(response.url),
                 status: response.status,
                 success: response.ok,
                 duration: duration,
@@ -166,11 +299,19 @@
                 data: {
                   requestHeaders: headers,
                   requestBody: requestBody,
-                  responseBody: truncate(text),
+                  responseBody: responseBody,
                 },
               },
             });
-          }).catch(function () {});
+          };
+
+          if (shouldSkipNetworkBody(method, requestUrl || response.url)) {
+            emitNetworkLog('[omitted: noisy/static/preflight network body]');
+          } else {
+            response.clone().text().then(function (text) {
+              emitNetworkLog(truncate(text));
+            }).catch(function () {});
+          }
         } catch (_) {}
         return response;
       }).catch(function (error) {
@@ -179,7 +320,7 @@
           network: {
             event: 'Error',
             method: method,
-            url: requestUrl || '',
+            url: logUrl || '',
             status: 0,
             success: false,
             duration: Date.now() - startedAt,
@@ -203,19 +344,22 @@
       var meta = xhr.__qaCapture || { method: 'GET', url: '', startedAt: 0 };
       meta.startedAt = Date.now();
       xhr.addEventListener('loadend', function () {
+        var responseBody = shouldSkipNetworkBody(meta.method, meta.url)
+          ? '[omitted: noisy/static/preflight network body]'
+          : truncate(xhr.responseText);
         sendLog({
           log: 'Network Trace',
           network: {
             event: 'Response',
             method: meta.method,
-            url: meta.url,
+            url: compactNetworkUrl(meta.url),
             status: xhr.status,
             success: xhr.status >= 200 && xhr.status < 400,
             duration: Date.now() - meta.startedAt,
             headers: {},
             data: {
               requestBody: truncate(body),
-              responseBody: truncate(xhr.responseText),
+              responseBody: responseBody,
             },
           },
         });

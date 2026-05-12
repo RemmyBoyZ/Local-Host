@@ -112,7 +112,6 @@ export function TestCaseDialog({
       !formData.testCaseId.trim()
       || !formData.page.trim()
       || !formData.testAction.trim()
-      || !formData.steps.trim()
       || !formData.expectedResult.trim()
     ) {
       toast({ title: 'Error', description: 'Mohon isi field yang wajib (*)', variant: 'destructive' });
@@ -124,7 +123,7 @@ export function TestCaseDialog({
       testCaseId: formData.testCaseId.trim(),
       page: formData.page.trim(),
       testAction: formData.testAction.trim(),
-      steps: formData.steps.trim(),
+      steps: formData.steps.trim() || '-',
       expectedResult: formData.expectedResult.trim(),
       projectId: selectedProject,
       moduleId: formData.moduleId || null,
@@ -258,15 +257,6 @@ export function TestCaseDialog({
               onChange={(e) => setFormData({ ...formData, testAction: e.target.value })}
               placeholder="Deskripsi aksi test yang dilakukan"
               rows={2}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label>Test Steps *</Label>
-            <Textarea
-              value={formData.steps}
-              onChange={(e) => setFormData({ ...formData, steps: e.target.value })}
-              placeholder="- Langkah 1&#10;- Langkah 2&#10;- Langkah 3"
-              rows={4}
             />
           </div>
           <div className="grid grid-cols-2 gap-4">

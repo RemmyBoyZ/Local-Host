@@ -173,6 +173,25 @@ function truncateText(value, maxLength = 4000) {
   return text.length > maxLength ? `${text.slice(0, maxLength)}... [truncated]` : text;
 }
 
+function compactNetworkUrl(value, maxLength = 1000) {
+  const text = String(value || '');
+  if (text.startsWith('data:')) {
+    const mediaType = text.slice(0, Math.min(text.indexOf(',') > 0 ? text.indexOf(',') : 80, 80));
+    return `${mediaType || 'data:'},[omitted ${text.length} chars]`;
+  }
+  if (text.startsWith('blob:')) return 'blob:[omitted]';
+  return truncateText(text, maxLength);
+}
+
+function shouldSkipNetworkBody(request = {}) {
+  const method = String(request.method || '').toUpperCase();
+  const url = String(request.url || '');
+  if (method === 'OPTIONS') return true;
+  if (url.startsWith('data:') || url.startsWith('blob:')) return true;
+  return /\.(?:js|css|png|jpe?g|svg|gif|webp|ico|woff2?|ttf|map)(?:[?#].*)?$/i.test(url)
+    || /\/(?:assets|public|media|images)\//i.test(url);
+}
+
 function isSensitiveKey(key) {
   return /authorization|cookie|token|password|secret|apikey|api-key|access_token|refresh_token|pin/i.test(String(key));
 }
@@ -218,6 +237,179 @@ function redactHeaders(headers = {}) {
       : value;
   }
   return output;
+}
+
+function buildManualStepCaptureScript(session, relay = 'http://127.0.0.1:3001') {
+  return `
+(() => {
+  const config = ${JSON.stringify({
+    testCaseId: session.testCaseId,
+    sessionId: session.sessionId,
+    relay,
+  })};
+  if (window.__qaManualStepCaptureInstalled) return;
+  window.__qaManualStepCaptureInstalled = true;
+
+  const cleanText = (value, maxLength = 140) => {
+    const text = String(value || '').replace(/\\s+/g, ' ').trim();
+    return text.length > maxLength ? text.slice(0, maxLength) + '...' : text;
+  };
+  const cssEscape = (value) => {
+    if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(String(value));
+    return String(value).replace(/["\\\\]/g, '\\\\$&');
+  };
+  const isSensitiveElement = (element) => {
+    const type = String(element?.type || '').toLowerCase();
+    const name = String(element?.name || element?.id || element?.getAttribute?.('aria-label') || '');
+    return type === 'password' || /password|passwd|pwd|pin|token|secret|otp/i.test(name);
+  };
+  const getElementLabel = (element) => {
+    if (!element?.getAttribute) return '';
+    const direct = cleanText(element.getAttribute('aria-label') || element.getAttribute('title') || element.getAttribute('placeholder') || '', 120);
+    if (direct) return direct;
+    if (element.id) {
+      const label = document.querySelector('label[for="' + cssEscape(element.id) + '"]');
+      const labelText = cleanText(label?.innerText || label?.textContent || '', 120);
+      if (labelText) return labelText;
+    }
+    const wrappedLabel = element.closest?.('label');
+    const wrappedText = cleanText(wrappedLabel?.innerText || wrappedLabel?.textContent || '', 120);
+    if (wrappedText) return wrappedText;
+    return cleanText(element.innerText || element.textContent || element.value || element.name || element.id || element.tagName || '', 120);
+  };
+  const getElementSelector = (element) => {
+    if (!element?.tagName) return '';
+    const parts = [];
+    let current = element;
+    while (current?.nodeType === 1 && parts.length < 4) {
+      let part = current.tagName.toLowerCase();
+      if (current.id) {
+        part += '#' + current.id;
+        parts.unshift(part);
+        break;
+      }
+      if (current.name) part += '[name="' + cssEscape(current.name) + '"]';
+      else if (current.getAttribute('data-testid')) part += '[data-testid="' + cssEscape(current.getAttribute('data-testid')) + '"]';
+      else if (typeof current.className === 'string') {
+        const className = current.className.trim().split(/\\s+/).slice(0, 2).join('.');
+        if (className) part += '.' + className;
+      }
+      parts.unshift(part);
+      current = current.parentElement;
+    }
+    return parts.join(' > ');
+  };
+  const getElementValue = (element) => {
+    if (!element) return '';
+    if (isSensitiveElement(element)) return '[REDACTED]';
+    if (element.type === 'checkbox' || element.type === 'radio') return element.checked ? 'checked' : 'unchecked';
+    return cleanText(element.value || '', 220);
+  };
+  const sendLog = (payload) => {
+    const logPayload = {
+      type: 'log',
+      source: 'manual-step-cdp',
+      testCaseId: config.testCaseId,
+      sessionId: config.sessionId,
+      timestamp: new Date().toISOString(),
+      ...payload,
+    };
+    try {
+      fetch(config.relay.replace(/\\/$/, '') + '/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(logPayload),
+        keepalive: true,
+      }).catch(() => {});
+    } catch (_) {}
+  };
+  const emitDetailStep = (action, element, valueOverride) => {
+    if (!element?.tagName) return;
+    const step = {
+      action,
+      label: getElementLabel(element),
+      value: valueOverride !== undefined ? valueOverride : getElementValue(element),
+      selector: getElementSelector(element),
+      tagName: element.tagName.toLowerCase(),
+      inputType: element.type || '',
+      url: window.location.href,
+    };
+    sendLog({
+      detailStep: step,
+      log: (action === 'click' ? 'Click' : 'Input') + (step.label ? ': ' + step.label : ''),
+    });
+  };
+
+  const inputTimers = new WeakMap();
+  document.addEventListener('click', (event) => {
+    const target = event.target?.closest
+      ? event.target.closest('button,a,input,textarea,select,[role="button"],[role="menuitem"],[data-testid]')
+      : event.target;
+    emitDetailStep('click', target, getElementValue(target));
+  }, true);
+  document.addEventListener('input', (event) => {
+    const target = event.target;
+    if (!target || !/input|textarea|select/i.test(target.tagName || '')) return;
+    const send = () => emitDetailStep('input', target, getElementValue(target));
+    clearTimeout(inputTimers.get(target));
+    inputTimers.set(target, setTimeout(send, 450));
+  }, true);
+  document.addEventListener('change', (event) => {
+    const target = event.target;
+    if (!target || !/input|textarea|select/i.test(target.tagName || '')) return;
+    emitDetailStep('change', target, getElementValue(target));
+  }, true);
+})();
+`;
+}
+
+async function installManualStepCapture(cdp, sessionInfo, session, cdpSessionId = null) {
+  const source = sessionInfo.stepCaptureSource || buildManualStepCaptureScript(session);
+  sessionInfo.stepCaptureSource = source;
+  sessionInfo.stepCaptureContexts = sessionInfo.stepCaptureContexts || new Set();
+  try {
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source }, cdpSessionId);
+  } catch (error) {
+    console.warn('Manual step preload failed:', error.message);
+  }
+  return source;
+}
+
+async function installManualStepCaptureInContext(cdp, sessionInfo, context, cdpSessionId = null) {
+  const contextId = context?.id;
+  if (!contextId || !sessionInfo.stepCaptureSource) return;
+  if (context.auxData && context.auxData.isDefault === false) return;
+  const installKey = `${cdpSessionId || 'main'}:${contextId}`;
+  if (sessionInfo.stepCaptureContexts?.has(installKey)) return;
+
+  try {
+    await cdp.send('Runtime.evaluate', {
+      expression: sessionInfo.stepCaptureSource,
+      contextId,
+      awaitPromise: false,
+    }, cdpSessionId);
+    sessionInfo.stepCaptureContexts.add(installKey);
+  } catch (error) {
+    console.warn(`Manual step capture injection failed for context ${installKey}:`, error.message);
+  }
+}
+
+async function prepareAttachedTargetCapture(cdp, sessionInfo, session, cdpSessionId) {
+  if (!cdpSessionId || sessionInfo.attachedCdpSessions?.has(cdpSessionId)) return;
+  sessionInfo.attachedCdpSessions.add(cdpSessionId);
+
+  await installManualStepCapture(cdp, sessionInfo, session, cdpSessionId);
+  try {
+    await cdp.send('Runtime.enable', {}, cdpSessionId);
+  } catch (error) {
+    console.warn(`Runtime.enable failed for child target ${cdpSessionId}:`, error.message);
+  }
+  try {
+    await cdp.send('Network.enable', {}, cdpSessionId);
+  } catch (_) {}
+  try {
+    await cdp.send('Runtime.runIfWaitingForDebugger', {}, cdpSessionId);
+  } catch (_) {}
 }
 
 function findBrowserPath() {
@@ -280,10 +472,11 @@ function createCdpClient(wsUrl) {
   let nextId = 1;
   const pending = new Map();
 
-  const send = (method, params = {}) => new Promise((resolve, reject) => {
+  const send = (method, params = {}, sessionId = null) => new Promise((resolve, reject) => {
     const id = nextId++;
     pending.set(id, { resolve, reject });
-    ws.send(JSON.stringify({ id, method, params }), (error) => {
+    const payload = sessionId ? { id, method, params, sessionId } : { id, method, params };
+    ws.send(JSON.stringify(payload), (error) => {
       if (error) {
         pending.delete(id);
         reject(error);
@@ -578,6 +771,9 @@ async function startCdpCapture(session, targetUrl) {
     requestMeta: new Map(),
     userDataDir,
     recording: null,
+    stepCaptureSource: buildManualStepCaptureScript(session),
+    stepCaptureContexts: new Set(),
+    attachedCdpSessions: new Set(),
   };
   cdpSessions.set(session.sessionId, sessionInfo);
 
@@ -591,6 +787,22 @@ async function startCdpCapture(session, targetUrl) {
     if (!message.method) return;
     const currentSession = getManualSession(session.sessionId);
     if (!currentSession?.active) return;
+
+    if (message.method === 'Target.attachedToTarget') {
+      await prepareAttachedTargetCapture(cdp, sessionInfo, session, message.params?.sessionId);
+      return;
+    }
+
+    if (message.method === 'Target.detachedFromTarget') {
+      if (message.params?.sessionId) sessionInfo.attachedCdpSessions.delete(message.params.sessionId);
+      return;
+    }
+
+    if (message.method === 'Runtime.executionContextCreated') {
+      installManualStepCaptureInContext(cdp, sessionInfo, message.params?.context, message.sessionId || null);
+      return;
+    }
+
     if (message.params?.timestamp) syncCdpClock(currentSession, message.params.timestamp);
     if (message.params?.wallTime && !currentSession.cdpTimeOffsetMs) {
       currentSession.cdpTimeOffsetMs = (Number(message.params.wallTime) * 1000) - (Number(message.params.timestamp || 0) * 1000);
@@ -634,7 +846,7 @@ async function startCdpCapture(session, targetUrl) {
       const requestRelativeMs = getRelativeMsFromCdpTimestamp(currentSession, message.params.timestamp);
       sessionInfo.requestMeta.set(message.params.requestId, {
         method: message.params.request.method,
-        url: message.params.request.url,
+        url: compactNetworkUrl(message.params.request.url),
         headers: redactHeaders(message.params.request.headers),
         requestBody: redactPayload(message.params.request.postData),
         startedAt: Date.now(),
@@ -665,10 +877,14 @@ async function startCdpCapture(session, targetUrl) {
       if (!request?.url) return;
       const finishedRelativeMs = getRelativeMsFromCdpTimestamp(currentSession, message.params.timestamp);
       let body = null;
-      try {
-        const result = await cdp.send('Network.getResponseBody', { requestId: message.params.requestId });
-        body = result?.base64Encoded ? '[base64 response omitted]' : redactPayload(result?.body);
-      } catch (_) {}
+      if (shouldSkipNetworkBody(request)) {
+        body = '[omitted: noisy/static/preflight network body]';
+      } else {
+        try {
+          const result = await cdp.send('Network.getResponseBody', { requestId: message.params.requestId });
+          body = result?.base64Encoded ? '[base64 response omitted]' : redactPayload(result?.body);
+        } catch (_) {}
+      }
       sessionInfo.requestMeta.delete(message.params.requestId);
       emitLog({
         type: 'log',
@@ -710,6 +926,12 @@ async function startCdpCapture(session, targetUrl) {
     cdpSessions.delete(session.sessionId);
   });
 
+  await cdp.send('Target.setAutoAttach', {
+    autoAttach: true,
+    waitForDebuggerOnStart: false,
+    flatten: true,
+  });
+  await installManualStepCapture(cdp, sessionInfo, session);
   await cdp.send('Runtime.enable');
   await cdp.send('Network.enable');
   await cdp.send('Page.enable');
@@ -773,6 +995,10 @@ const server = http.createServer((req, res) => {
         if (error) throw error;
         if (isStoppedManualLog(logData)) {
           return sendJson(res, 409, { success: false, error: 'Manual capture session is not active' });
+        }
+        const manualSession = getManualSession(logData.sessionId);
+        if (manualSession?.active && typeof logData.relativeMs !== 'number') {
+          logData.relativeMs = getRelativeMs(manualSession);
         }
 
         console.log(`[HTTP IN] Received log #${logData.type} for TC: ${logData.testCaseId}`);

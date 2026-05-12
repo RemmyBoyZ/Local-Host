@@ -3,11 +3,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useToast } from '@/hooks/use-toast';
 
-export type DevLogTab = 'console' | 'network' | 'execution';
+export type DevLogTab = 'console' | 'network' | 'execution' | 'detail-step';
 
 export interface AutomationLogEntry {
   id?: string;
   type?: string;
+  source?: string;
   testCaseId?: string;
   timestamp?: string | number | Date;
   relativeMs?: number;
@@ -17,6 +18,16 @@ export interface AutomationLogEntry {
   isExecution?: boolean;
   isConsole?: boolean;
   isNetwork?: boolean;
+  isDetailStep?: boolean;
+  detailStep?: {
+    action?: string;
+    label?: string;
+    value?: string;
+    selector?: string;
+    tagName?: string;
+    inputType?: string;
+    url?: string;
+  };
   network?: {
     event?: string;
     method?: string;
@@ -51,6 +62,17 @@ export interface ManualRecordingMeta {
 }
 
 const DEBUG_AUTOMATION_LOGS = false;
+const RELAY_HTTP_URL = 'http://127.0.0.1:3001';
+const RELAY_WS_URL = 'ws://127.0.0.1:3001';
+
+async function ensureAutomationRelayReady() {
+  const response = await fetch('/api/automation/relay', { cache: 'no-store' });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.ready) {
+    throw new Error(data.error || 'Relay manual capture tidak siap.');
+  }
+  return data;
+}
 
 interface AutomationLogTestCase {
   id: string;
@@ -69,7 +91,8 @@ function createLogId() {
 function normalizeLogEntry(message: AutomationLogEntry): AutomationLogEntry {
   const isNetwork = !!message.network || message.log?.toString().startsWith('Network:');
   const isConsole = !!message.level || !!message.console;
-  const isExecution = !isNetwork && !isConsole;
+  const isDetailStep = !!message.detailStep || String(message.source || '').startsWith('manual-step');
+  const isExecution = !isNetwork && !isConsole && !isDetailStep;
 
   return {
     ...message,
@@ -78,10 +101,12 @@ function normalizeLogEntry(message: AutomationLogEntry): AutomationLogEntry {
     isExecution,
     isConsole,
     isNetwork,
+    isDetailStep,
   };
 }
 
 export const filterConsoleLogs = (logs: AutomationLogEntry[]) => logs.filter(log => log.isConsole);
+export const filterDetailStepLogs = (logs: AutomationLogEntry[]) => logs.filter(log => log.isDetailStep);
 
 export const filterNetworkLogs = (logs: AutomationLogEntry[]) => logs.filter(log => {
   if (!log.isNetwork) return false;
@@ -141,7 +166,8 @@ export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
     if (!testCaseId) return null;
 
     try {
-      const response = await fetch(`http://127.0.0.1:3001/recordings/${encodeURIComponent(testCaseId)}/latest`);
+      await ensureAutomationRelayReady();
+      const response = await fetch(`${RELAY_HTTP_URL}/recordings/${encodeURIComponent(testCaseId)}/latest`);
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data.recording) {
         setManualRecording(null);
@@ -159,7 +185,8 @@ export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
     if (!testCaseId) return null;
 
     try {
-      const response = await fetch(`http://127.0.0.1:3001/logs/${encodeURIComponent(testCaseId)}?run=current`);
+      await ensureAutomationRelayReady();
+      const response = await fetch(`${RELAY_HTTP_URL}/logs/${encodeURIComponent(testCaseId)}?run=current`);
       if (!response.ok) return null;
 
       const logs = parseJsonlLogs(await response.text());
@@ -242,11 +269,20 @@ export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
       }, 2500);
     };
 
-    const connect = () => {
+    const connect = async () => {
       if (closedByHook) return;
 
       try {
-        ws = new WebSocket('ws://127.0.0.1:3001');
+        await ensureAutomationRelayReady();
+      } catch {
+        setSocketReady(false);
+        scheduleReconnect();
+        return;
+      }
+      if (closedByHook) return;
+
+      try {
+        ws = new WebSocket(RELAY_WS_URL);
       } catch {
         setSocketReady(false);
         scheduleReconnect();
@@ -313,7 +349,8 @@ export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
 
     setIsLoadingHistory(true);
     try {
-      const response = await fetch(`http://127.0.0.1:3001/logs/${encodeURIComponent(viewTestCase.id)}?run=previous`);
+      await ensureAutomationRelayReady();
+      const response = await fetch(`${RELAY_HTTP_URL}/logs/${encodeURIComponent(viewTestCase.id)}?run=previous`);
       if (!response.ok) throw new Error('Riwayat run sebelumnya belum ada. Run terbaru sudah dimuat otomatis jika tersedia.');
 
       const logs = parseJsonlLogs(await response.text());
@@ -393,7 +430,8 @@ export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
       if (!targetUrl) throw new Error('Isi URL target terlebih dahulu.');
 
       const captureUrl = buildManualCaptureUrl(targetUrl, sessionId, viewTestCase.id);
-      const response = await fetch('http://127.0.0.1:3001/manual/start', {
+      await ensureAutomationRelayReady();
+      const response = await fetch(`${RELAY_HTTP_URL}/manual/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -410,7 +448,7 @@ export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
       setLiveLogs([]);
       setAiSummary(null);
       setManualRecording(null);
-      setActiveDevLogTab('console');
+      setActiveDevLogTab('detail-step');
       setManualCaptureSessionId(sessionId);
       toast({
         title: 'Manual capture dimulai',
@@ -434,7 +472,8 @@ export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
 
     setIsStoppingManualCapture(true);
     try {
-      const response = await fetch('http://127.0.0.1:3001/manual/stop', {
+      await ensureAutomationRelayReady();
+      const response = await fetch(`${RELAY_HTTP_URL}/manual/stop`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId: manualCaptureSessionId }),

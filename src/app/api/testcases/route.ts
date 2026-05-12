@@ -142,7 +142,7 @@ export async function POST(req: NextRequest) {
     const testCaseId = cleanText(body.testCaseId);
     const page = cleanText(body.page);
     const testAction = cleanText(body.testAction);
-    const steps = cleanText(body.steps);
+    const steps = cleanText(body.steps) || '-';
     const expectedResult = cleanText(body.expectedResult);
     const projectId = cleanText(body.projectId);
     const status = TESTCASE_STATUSES.has(body.status) ? body.status : 'NOT DONE';
@@ -153,7 +153,6 @@ export async function POST(req: NextRequest) {
     if (!testCaseId) return validationError('Test Case ID wajib diisi.');
     if (!page) return validationError('Page wajib diisi.');
     if (!testAction) return validationError('Test Action wajib diisi.');
-    if (!steps) return validationError('Steps wajib diisi.');
     if (!expectedResult) return validationError('Expected Result wajib diisi.');
     const project = await db.project.findUnique({ where: { id: projectId }, select: { id: true } });
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
@@ -228,7 +227,7 @@ export async function PUT(req: NextRequest) {
     if (data.testCaseId !== undefined && !cleanText(data.testCaseId)) return validationError('Test Case ID wajib diisi.');
     if (data.page !== undefined && !cleanText(data.page)) return validationError('Page wajib diisi.');
     if (data.testAction !== undefined && !cleanText(data.testAction)) return validationError('Test Action wajib diisi.');
-    if (data.steps !== undefined && !cleanText(data.steps)) return validationError('Steps wajib diisi.');
+    if (data.steps !== undefined) data.steps = cleanText(data.steps) || '-';
     if (data.expectedResult !== undefined && !cleanText(data.expectedResult)) return validationError('Expected Result wajib diisi.');
     if (data.testCaseId !== undefined) {
       const duplicate = await db.testCase.findFirst({

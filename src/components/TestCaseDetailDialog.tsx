@@ -2,8 +2,8 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Code2, Copy, Edit3, Film, HelpCircle, History,
-  Filter, Layers, Loader2, Maximize2, Minus, Play, Plus, RefreshCw, Search, Sparkles, Square, Trash2, Wrench, X
+  AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Code2, Copy, Edit3, Film, GripVertical, HelpCircle, History,
+  Filter, Keyboard, Layers, Loader2, Maximize2, Minus, MousePointerClick, Pencil, Play, Plus, RefreshCw, Search, Sparkles, Square, Trash2, Wrench, X
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -18,16 +18,27 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TestCase } from '@/components/TestCaseTable';
 import type { ManualRecordingMeta } from '@/hooks/useAutomationLogs';
 
-type DevLogTab = 'console' | 'network' | 'execution';
+type DevLogTab = 'console' | 'network' | 'execution' | 'detail-step';
 
 interface LogEntry {
   id?: string;
+  source?: string;
   timestamp?: string | number | Date;
   relativeMs?: number;
   level?: string;
   log?: unknown;
   isConsole?: boolean;
   isNetwork?: boolean;
+  isDetailStep?: boolean;
+  detailStep?: {
+    action?: string;
+    label?: string;
+    value?: string;
+    selector?: string;
+    tagName?: string;
+    inputType?: string;
+    url?: string;
+  };
   network?: {
     event?: string;
     method?: string;
@@ -63,6 +74,12 @@ interface NetworkFilterState {
   showOther: boolean;
 }
 
+type DetailStepData = NonNullable<LogEntry['detailStep']>;
+type DetailStepLog = LogEntry & {
+  detailStepKey: string;
+  detailStep: DetailStepData;
+};
+
 const DEFAULT_NETWORK_FILTERS: NetworkFilterState = {
   search: '',
   host: 'all',
@@ -86,6 +103,7 @@ const formatPrettyValue = (value: unknown) => {
   if (typeof value === 'string') {
     const trimmed = value.trim();
     if (!trimmed) return '-';
+    if (trimmed.length > 8000) return `${trimmed.slice(0, 8000)}... [truncated in UI]`;
 
     try {
       return JSON.stringify(JSON.parse(trimmed), null, 2);
@@ -99,6 +117,17 @@ const formatPrettyValue = (value: unknown) => {
   } catch {
     return String(value);
   }
+};
+
+const formatNetworkUrlForDisplay = (url: string, maxLength = 1400) => {
+  if (!url) return '-';
+  if (url.startsWith('data:')) {
+    const commaIndex = url.indexOf(',');
+    const mediaType = url.slice(0, Math.min(commaIndex > 0 ? commaIndex : 80, 80));
+    return `${mediaType || 'data:'},[omitted ${url.length} chars]`;
+  }
+  if (url.startsWith('blob:')) return 'blob:[omitted]';
+  return url.length > maxLength ? `${url.slice(0, maxLength)}... [truncated in UI]` : url;
 };
 
 const asRecord = (value: unknown): Record<string, unknown> | null => (
@@ -115,6 +144,32 @@ const getResponsePayload = (data: unknown) => {
   const record = asRecord(data);
   if (!record) return data;
   return record.responseBody ?? record.response ?? record.data ?? data;
+};
+
+const getDetailStepKey = (log: LogEntry, index: number) => {
+  const step = log.detailStep;
+  return [
+    log.id,
+    log.relativeMs,
+    step?.action,
+    step?.label,
+    step?.value,
+    step?.selector,
+    step?.url,
+    index,
+  ].filter((part) => part !== undefined && part !== null && part !== '').join('|');
+};
+
+const moveKeyBefore = (keys: string[], movingKey: string, targetKey: string) => {
+  if (movingKey === targetKey) return keys;
+  const withoutMoving = keys.filter((key) => key !== movingKey);
+  const targetIndex = withoutMoving.indexOf(targetKey);
+  if (targetIndex < 0) return keys;
+  return [
+    ...withoutMoving.slice(0, targetIndex),
+    movingKey,
+    ...withoutMoving.slice(targetIndex),
+  ];
 };
 
 const parseNetworkUrl = (url: string) => {
@@ -323,10 +378,45 @@ export function TestCaseDetailDialog({
   const [isRecordingFullscreen, setIsRecordingFullscreen] = useState(false);
   const [isClosingRecordingFullscreen, setIsClosingRecordingFullscreen] = useState(false);
   const [networkFilters, setNetworkFilters] = useState<NetworkFilterState>(DEFAULT_NETWORK_FILTERS);
+  const [detailStepEdits, setDetailStepEdits] = useState<Record<string, Partial<DetailStepData>>>({});
+  const [deletedDetailStepKeys, setDeletedDetailStepKeys] = useState<Set<string>>(() => new Set());
+  const [detailStepOrder, setDetailStepOrder] = useState<string[]>([]);
+  const [editingDetailStepKey, setEditingDetailStepKey] = useState<string | null>(null);
+  const [draggingDetailStepKey, setDraggingDetailStepKey] = useState<string | null>(null);
   const recordingViewportRef = useRef<HTMLDivElement>(null);
   const fullscreenTimelineRef = useRef<HTMLDivElement>(null);
   const recordingPanRef = useRef({ active: false, startX: 0, startY: 0, scrollLeft: 0, scrollTop: 0 });
   const consoleLogs = useMemo(() => filterConsoleLogs(liveLogs), [filterConsoleLogs, liveLogs]);
+  const detailStepLogs = useMemo(() => (
+    liveLogs.filter((log) => log.isDetailStep || Boolean(log.detailStep))
+  ), [liveLogs]);
+  const baseDetailStepRows = useMemo<DetailStepLog[]>(() => (
+    detailStepLogs
+      .filter((log): log is LogEntry & { detailStep: DetailStepData } => Boolean(log.detailStep))
+      .map((log, index) => {
+        const detailStepKey = getDetailStepKey(log, index);
+        return {
+          ...log,
+          detailStepKey,
+          detailStep: {
+            ...log.detailStep,
+            ...(detailStepEdits[detailStepKey] || {}),
+          },
+        };
+      })
+      .filter((log) => !deletedDetailStepKeys.has(log.detailStepKey))
+  ), [deletedDetailStepKeys, detailStepEdits, detailStepLogs]);
+  const detailStepRows = useMemo(() => {
+    const orderIndex = new Map(detailStepOrder.map((key, index) => [key, index]));
+    return [...baseDetailStepRows].sort((a, b) => {
+      const aIndex = orderIndex.get(a.detailStepKey);
+      const bIndex = orderIndex.get(b.detailStepKey);
+      if (aIndex !== undefined && bIndex !== undefined) return aIndex - bIndex;
+      if (aIndex !== undefined) return -1;
+      if (bIndex !== undefined) return 1;
+      return 0;
+    });
+  }, [baseDetailStepRows, detailStepOrder]);
   const rawNetworkLogs = useMemo(() => (
     liveLogs.filter((log) => log.isNetwork || Boolean(log.network))
   ), [liveLogs]);
@@ -396,6 +486,29 @@ export function TestCaseDetailDialog({
     ), manualRecording.frames[0]);
   }, [manualRecording, recordingSeekMs]);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDetailStepEdits({});
+      setDeletedDetailStepKeys(new Set());
+      setDetailStepOrder([]);
+      setEditingDetailStepKey(null);
+      setDraggingDetailStepKey(null);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [viewTestCase?.id, loadedRunLabel]);
+
+  useEffect(() => {
+    if (liveLogs.length > 0) return;
+    const timer = window.setTimeout(() => {
+      setDetailStepEdits({});
+      setDeletedDetailStepKeys(new Set());
+      setDetailStepOrder([]);
+      setEditingDetailStepKey(null);
+      setDraggingDetailStepKey(null);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [liveLogs.length]);
+
   const formatRelativeTime = (relativeMs?: number) => {
     if (typeof relativeMs !== 'number') return '-';
     const safeMs = Math.max(0, Math.round(relativeMs));
@@ -428,6 +541,47 @@ export function TestCaseDetailDialog({
   const getNetworkDuration = (network: NonNullable<LogEntry['network']>) => (
     typeof network.duration === 'number' ? `${network.duration}ms` : '-'
   );
+
+  const getDetailStepTitle = (log: LogEntry) => {
+    const step = log.detailStep;
+    if (!step) return String(log.log ?? 'Manual step');
+    const action = step.action === 'input' ? 'Input text' : step.action === 'change' ? 'Change value' : 'Click';
+    return `${action}${step.label ? `: ${step.label}` : ''}`;
+  };
+
+  const getDetailStepIcon = (action?: string) => (
+    action === 'input' || action === 'change'
+      ? <Keyboard className="h-3.5 w-3.5" />
+      : <MousePointerClick className="h-3.5 w-3.5" />
+  );
+
+  const updateDetailStep = (key: string, patch: Partial<DetailStepData>) => {
+    setDetailStepEdits((current) => ({
+      ...current,
+      [key]: {
+        ...(current[key] || {}),
+        ...patch,
+      },
+    }));
+  };
+
+  const deleteDetailStep = (key: string) => {
+    setDeletedDetailStepKeys((current) => {
+      const next = new Set(current);
+      next.add(key);
+      return next;
+    });
+    setDetailStepOrder((current) => current.filter((item) => item !== key));
+    if (expandedLogId === key) setExpandedLogId(null);
+    if (editingDetailStepKey === key) setEditingDetailStepKey(null);
+  };
+
+  const handleDetailStepDrop = (targetKey: string) => {
+    if (!draggingDetailStepKey) return;
+    const visibleKeys = detailStepRows.map((log) => log.detailStepKey);
+    setDetailStepOrder(moveKeyBefore(visibleKeys, draggingDetailStepKey, targetKey));
+    setDraggingDetailStepKey(null);
+  };
 
   const updateNetworkFilters = (nextFilters: Partial<NetworkFilterState>) => {
     setNetworkFilters((current) => ({ ...current, ...nextFilters }));
@@ -661,18 +815,11 @@ export function TestCaseDetailDialog({
 
                   <Separator className="my-6" />
 
-                  <div className="grid grid-cols-1 gap-6">
-                    <div className="space-y-2">
-                      <Label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Test Action</Label>
-                      <div className="text-sm bg-white border border-slate-200 p-4 rounded-xl shadow-sm text-slate-700 leading-relaxed italic">
-                        "{viewTestCase.testAction}"
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="grid grid-cols-1 gap-6">
                       <div className="space-y-2">
-                        <Label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Test Steps</Label>
-                        <div className="text-sm bg-slate-50 border border-slate-200 p-4 rounded-xl whitespace-pre-wrap text-slate-600 font-medium leading-relaxed min-h-[120px]">
-                          {viewTestCase.steps}
+                        <Label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Test Action</Label>
+                        <div className="text-sm bg-white border border-slate-200 p-4 rounded-xl shadow-sm text-slate-700 leading-relaxed italic">
+                          "{viewTestCase.testAction}"
                         </div>
                       </div>
                       <div className="space-y-2">
@@ -681,7 +828,6 @@ export function TestCaseDetailDialog({
                           {viewTestCase.expectedResult}
                         </div>
                       </div>
-                    </div>
                     <div className="space-y-2">
                       <Label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Remarks / Catatan</Label>
                       <div className="min-h-[72px] whitespace-pre-wrap rounded-xl border border-amber-100 bg-amber-50/50 p-4 text-sm italic text-amber-800">
@@ -965,6 +1111,14 @@ export function TestCaseDetailDialog({
                           EXECUTION
                         </Button>
                         <Button
+                          variant={activeDevLogTab === 'detail-step' ? 'default' : 'ghost'}
+                          size="sm"
+                          className={`h-7 px-3 text-[10px] font-bold ${activeDevLogTab === 'detail-step' ? 'bg-white text-slate-800 shadow-sm hover:bg-white' : 'text-slate-500'}`}
+                          onClick={() => setActiveDevLogTab('detail-step')}
+                        >
+                          DETAILED STEPS ({detailStepRows.length})
+                        </Button>
+                        <Button
                           variant={activeDevLogTab === 'console' ? 'default' : 'ghost'}
                           size="sm"
                           className={`h-7 px-3 text-[10px] font-bold ${activeDevLogTab === 'console' ? 'bg-white text-slate-800 shadow-sm hover:bg-white' : 'text-slate-500'}`}
@@ -1058,6 +1212,130 @@ export function TestCaseDetailDialog({
                               </div>
                             )}
                             <div ref={logEndRef} className="h-8" />
+                          </div>
+                        ) : activeDevLogTab === 'detail-step' ? (
+                          <div className="divide-y divide-slate-800/50">
+                            {detailStepRows.length === 0 ? (
+                              <div className="h-full flex flex-col items-center justify-center py-20 text-slate-600">
+                                <MousePointerClick className="w-8 h-8 mb-3 opacity-20" />
+                                <p className="font-bold tracking-widest text-[10px] uppercase">Awaiting Detailed Steps...</p>
+                              </div>
+                            ) : (
+                              detailStepRows.map((log, index) => {
+                                const step = log.detailStep;
+                                const logId = log.detailStepKey;
+                                const isEditing = editingDetailStepKey === logId;
+
+                                return (
+                                  <div
+                                    key={logId}
+                                    draggable
+                                    onDragStart={() => setDraggingDetailStepKey(logId)}
+                                    onDragEnd={() => setDraggingDetailStepKey(null)}
+                                    onDragOver={(event) => event.preventDefault()}
+                                    onDrop={() => handleDetailStepDrop(logId)}
+                                    className={`group transition-colors ${draggingDetailStepKey === logId ? 'bg-cyan-950/30' : 'hover:bg-white/5'}`}
+                                  >
+                                    <div
+                                      className="grid w-full grid-cols-12 items-start gap-3 p-3 text-left"
+                                    >
+                                      <span className="col-span-1 flex items-center gap-2 text-slate-600">
+                                        <GripVertical className="h-4 w-4 cursor-grab active:cursor-grabbing" />
+                                        <span className="text-[10px] font-bold">{index + 1}</span>
+                                      </span>
+                                      <span className="col-span-2 text-[10px] font-bold text-slate-500">
+                                        {formatRelativeTime(log.relativeMs)}
+                                      </span>
+                                      <span className="col-span-1 flex h-7 w-7 items-center justify-center rounded-md border border-cyan-500/20 bg-cyan-950/40 text-cyan-300">
+                                        {getDetailStepIcon(step?.action)}
+                                      </span>
+                                      <div
+                                        role="button"
+                                        tabIndex={0}
+                                        className="col-span-6 min-w-0 text-left"
+                                        onClick={() => {
+                                          seekRecordingFromLog(log);
+                                          setExpandedLogId(expandedLogId === logId ? null : logId);
+                                        }}
+                                      >
+                                        {isEditing ? (
+                                          <div className="space-y-2">
+                                            <Input
+                                              value={step.label || ''}
+                                              onChange={(event) => updateDetailStep(logId, { label: event.target.value })}
+                                              placeholder="Step label"
+                                              className="h-8 border-slate-700 bg-slate-900 text-xs text-slate-100"
+                                              onClick={(event) => event.stopPropagation()}
+                                            />
+                                            <Input
+                                              value={step.value || ''}
+                                              onChange={(event) => updateDetailStep(logId, { value: event.target.value })}
+                                              placeholder="Value"
+                                              className="h-8 border-slate-700 bg-slate-900 text-xs text-emerald-200"
+                                              onClick={(event) => event.stopPropagation()}
+                                            />
+                                          </div>
+                                        ) : (
+                                          <>
+                                            <span className="block truncate font-sans text-xs font-bold text-slate-200">
+                                              {getDetailStepTitle(log)}
+                                            </span>
+                                            {step?.value && (
+                                              <span className="mt-1 block truncate font-sans text-[11px] text-emerald-300">
+                                                Value: {step.value}
+                                              </span>
+                                            )}
+                                            <span className="mt-1 block truncate text-[10px] text-slate-600">
+                                              {step?.selector || step?.url || '-'}
+                                            </span>
+                                          </>
+                                        )}
+                                      </div>
+                                      <span className="col-span-2 flex justify-end gap-1">
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="sm"
+                                          className="h-7 w-7 p-0 text-slate-500 hover:bg-emerald-950/40 hover:text-emerald-300"
+                                          onClick={() => setEditingDetailStepKey(isEditing ? null : logId)}
+                                        >
+                                          {isEditing ? <Check className="h-3.5 w-3.5" /> : <Pencil className="h-3.5 w-3.5" />}
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="sm"
+                                          className="h-7 w-7 p-0 text-slate-500 hover:bg-rose-950/40 hover:text-rose-300"
+                                          onClick={() => deleteDetailStep(logId)}
+                                        >
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="sm"
+                                          className="h-7 w-7 p-0 text-slate-500 hover:bg-slate-900 hover:text-slate-200"
+                                          onClick={() => {
+                                            seekRecordingFromLog(log);
+                                            setExpandedLogId(expandedLogId === logId ? null : logId);
+                                          }}
+                                        >
+                                          <ChevronDown className={`w-3.5 h-3.5 transition-transform ${expandedLogId === logId ? 'rotate-180' : ''}`} />
+                                        </Button>
+                                      </span>
+                                    </div>
+                                    {expandedLogId === logId && (
+                                      <div className="px-12 pb-3">
+                                        <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded border border-slate-800 bg-slate-900 p-3 text-[10px] leading-relaxed text-slate-300">
+                                          {formatPrettyValue(step || log.log)}
+                                        </pre>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })
+                            )}
+                            <div ref={logEndRef} className="h-4" />
                           </div>
                         ) : activeDevLogTab === 'console' ? (
                           <div className="divide-y divide-slate-800/50">
@@ -1236,7 +1514,7 @@ export function TestCaseDetailDialog({
                                           </span>
                                         </div>
                                         <div className="col-span-5 min-w-0">
-                                          <div className="truncate text-slate-300">{meta.pathname.split('/').pop() || meta.pathname || net.network.url}</div>
+                                          <div className="truncate text-slate-300">{meta.pathname.split('/').pop() || meta.pathname || formatNetworkUrlForDisplay(net.network.url, 180)}</div>
                                           <div className="truncate text-[9px] text-slate-600">{meta.host}</div>
                                         </div>
                                         <div className="col-span-2 text-center">
@@ -1259,7 +1537,7 @@ export function TestCaseDetailDialog({
                                           <div className="mb-3 rounded-lg border border-slate-800 bg-slate-950/70 p-3">
                                             <p className="mb-1 text-[10px] font-bold uppercase text-slate-500">Full URL</p>
                                             <pre className="whitespace-pre-wrap break-all text-[10px] leading-relaxed text-slate-300">
-                                              {net.network.url}
+                                              {formatNetworkUrlForDisplay(net.network.url)}
                                             </pre>
                                           </div>
                                           <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
@@ -1314,7 +1592,7 @@ export function TestCaseDetailDialog({
                       </div>
                       <div>
                         <p className="text-[11px] text-slate-600 font-medium leading-relaxed">
-                          <span className="font-bold text-indigo-600">DevTools Mode:</span> Tab **Console** menampilkan log browser (JS errors/logs). Tab **Network** menampilkan *XHR/Fetch* traffic. Klik pada baris log untuk melihat detail payload dan headers.
+                          <span className="font-bold text-indigo-600">DevTools Mode:</span> Tab Detail Step menampilkan click/input manual. Tab Console menampilkan log browser. Tab Network menampilkan XHR/Fetch traffic. Klik baris log untuk melihat detail payload dan headers.
                         </p>
                       </div>
                     </div>
@@ -1476,6 +1754,15 @@ export function TestCaseDetailDialog({
                     type="button"
                     variant="ghost"
                     size="sm"
+                    className={`h-7 px-2 text-[10px] font-bold ${activeDevLogTab === 'detail-step' ? 'bg-white text-slate-900 hover:bg-white' : 'text-slate-400 hover:text-white'}`}
+                    onClick={() => setActiveDevLogTab('detail-step')}
+                  >
+                    STEPS
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
                     className={`h-7 px-2 text-[10px] font-bold ${activeDevLogTab === 'console' ? 'bg-white text-slate-900 hover:bg-white' : 'text-slate-400 hover:text-white'}`}
                     onClick={() => setActiveDevLogTab('console')}
                   >
@@ -1494,7 +1781,37 @@ export function TestCaseDetailDialog({
               </div>
 
               <div className="min-h-0 flex-1 overflow-y-auto">
-                {activeDevLogTab === 'network' ? (
+                {activeDevLogTab === 'detail-step' ? (
+                  <div className="divide-y divide-slate-800/70">
+                    {detailStepRows.length === 0 ? (
+                      <div className="flex h-full flex-col items-center justify-center py-20 text-slate-600">
+                        <MousePointerClick className="mb-3 h-8 w-8 opacity-20" />
+                        <p className="text-[10px] font-bold uppercase tracking-widest">No Detailed Steps</p>
+                      </div>
+                    ) : (
+                      detailStepRows.map((log, index) => {
+                        const step = log.detailStep;
+                        const logId = log.detailStepKey;
+
+                        return (
+                          <button
+                            key={logId}
+                            type="button"
+                            className="grid w-full grid-cols-12 gap-2 p-2 text-left hover:bg-white/5"
+                            onClick={() => seekRecordingFromLog(log)}
+                          >
+                            <span className="col-span-2 text-[10px] font-bold text-slate-500">{formatRelativeTime(log.relativeMs)}</span>
+                            <span className="col-span-1 text-cyan-300">{getDetailStepIcon(step?.action)}</span>
+                            <span className="col-span-9 min-w-0">
+                              <span className="block truncate text-[11px] font-bold text-slate-200">{index + 1}. {getDetailStepTitle(log)}</span>
+                              {step?.value && <span className="block truncate text-[10px] text-emerald-300">{step.value}</span>}
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                ) : activeDevLogTab === 'network' ? (
                   <div className="divide-y divide-slate-800/70">
                     {networkLogs.length === 0 ? (
                       <div className="flex h-full flex-col items-center justify-center py-20 text-slate-600">
@@ -1522,7 +1839,7 @@ export function TestCaseDetailDialog({
                                 </span>
                               </span>
                               <span className="col-span-4 min-w-0">
-                                <span className="block truncate text-[11px] text-slate-300">{meta.pathname.split('/').pop() || meta.pathname || net.network.url}</span>
+                                <span className="block truncate text-[11px] text-slate-300">{meta.pathname.split('/').pop() || meta.pathname || formatNetworkUrlForDisplay(net.network.url, 180)}</span>
                                 <span className="block truncate text-[9px] text-slate-600">{meta.host}</span>
                               </span>
                               <span className="col-span-2 text-center">
@@ -1536,7 +1853,7 @@ export function TestCaseDetailDialog({
                             </button>
                             {expandedLogId === logId && (
                               <div className="space-y-2 border-t border-slate-800 bg-slate-900/60 p-3">
-                                <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-all rounded border border-slate-800 bg-slate-950 p-2 text-[10px] text-slate-300">{net.network.url}</pre>
+                                <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-all rounded border border-slate-800 bg-slate-950 p-2 text-[10px] text-slate-300">{formatNetworkUrlForDisplay(net.network.url)}</pre>
                                 <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words rounded border border-slate-800 bg-slate-950 p-2 text-[10px] text-emerald-300/80">{formatPrettyValue(getResponsePayload(net.network.data))}</pre>
                               </div>
                             )}
