@@ -371,11 +371,6 @@ function buildManualStepCaptureScript(session, relay = 'http://127.0.0.1:3001') 
     log: (action === 'click' ? 'Click' : 'Input') + (step.label ? ': ' + step.label : ''),
   });
 };
-    sendLog({
-      detailStep: step,
-      log: (action === 'click' ? 'Click' : 'Input') + (step.label ? ': ' + step.label : ''),
-    });
-  };
 
   const inputTimers = new WeakMap();
   document.addEventListener('click', (event) => {
@@ -581,11 +576,20 @@ function writeRecordingMetadata(recording) {
     stoppedAt: recording.stoppedAt || null,
     frameIntervalMs: recording.frameIntervalMs,
     status: recording.status,
+    videoUrl: recording.videoUrl || null,   // ← TAMBAH
+    videoPath: recording.videoPath || null, // ← TAMBAH
     frames: recording.frames.map(frame => ({
       ...frame,
       url: buildRecordingFrameUrl(recording.testCaseId, recording.sessionId, frame.file),
     })),
   };
+
+  try {
+    fs.writeFileSync(recording.paths.metadata, JSON.stringify(payload, null, 2));
+  } catch (error) {
+    console.error('Failed to write recording metadata:', error.message);
+  }
+}
 
   try {
     fs.writeFileSync(recording.paths.metadata, JSON.stringify(payload, null, 2));
@@ -1132,6 +1136,45 @@ const server = http.createServer((req, res) => {
   } else if (req.method === 'GET' && requestUrl.pathname.startsWith('/recordings/')) {
     const parts = requestUrl.pathname.split('/').filter(Boolean).map(decodeURIComponent);
     const [, testCaseId, sessionId, type, file] = parts;
+  if (testCaseId && sessionId && type === 'video') {
+  let videoPath = null;
+  for (const paths of [getRecordingPaths(testCaseId, sessionId), getLegacyRecordingPaths(testCaseId, sessionId)]) {
+    const candidatePath = path.join(paths.baseDir, 'recording.mp4');
+    if (fs.existsSync(candidatePath)) {
+      videoPath = candidatePath;
+      break;
+    }
+  }
+  if (!videoPath) {
+    return sendJson(res, 404, { success: false, error: 'Video not found' });
+  }
+
+  const stat = fs.statSync(videoPath);
+  const fileSize = stat.size;
+  const range = req.headers.range;
+
+  if (range) {
+    const parts = range.replace(/bytes=/, '').split('-');
+    const start = parseInt(parts[0], 10);
+    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+    const chunkSize = end - start + 1;
+    res.writeHead(206, {
+      'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+      'Accept-Ranges': 'bytes',
+      'Content-Length': chunkSize,
+      'Content-Type': 'video/mp4',
+    });
+    fs.createReadStream(videoPath, { start, end }).pipe(res);
+  } else {
+    res.writeHead(200, {
+      'Content-Length': fileSize,
+      'Content-Type': 'video/mp4',
+      'Accept-Ranges': 'bytes',
+    });
+    fs.createReadStream(videoPath).pipe(res);
+  }
+  return;
+}
 
     if (testCaseId && sessionId === 'latest') {
       const metadata = getLatestRecordingMetadata(testCaseId);
