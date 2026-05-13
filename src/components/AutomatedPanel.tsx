@@ -1,5 +1,7 @@
 'use client';
 
+import { Bot, CalendarClock, Eye, FileClock, MonitorDot, RefreshCw, Search, TerminalSquare } from 'lucide-react';
+import { Bot, CalendarClock, Download, Eye, FileClock, MonitorDot, RefreshCw, Search, TerminalSquare } from 'lucide-react';
 import type React from 'react';
 import { Bot, CalendarClock, Eye, FileClock, MonitorDot, RefreshCw, Search, TerminalSquare } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -213,7 +215,7 @@ export function AutomatedPanel({
                     <TableHead className="min-w-[170px] text-[11px] font-bold uppercase tracking-wide text-slate-500">Last Run</TableHead>
                     <TableHead className="min-w-[140px] text-[11px] font-bold uppercase tracking-wide text-slate-500">Source</TableHead>
                     <TableHead className="min-w-[150px] text-[11px] font-bold uppercase tracking-wide text-slate-500">History</TableHead>
-                    <TableHead className="w-[80px] text-[11px] font-bold uppercase tracking-wide text-slate-500">Aksi</TableHead>
+                    <TableHead className="w-[100px] text-[11px] font-bold uppercase tracking-wide text-slate-500">Aksi</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -268,15 +270,30 @@ export function AutomatedPanel({
                         </div>
                       </TableCell>
                       <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 w-8 rounded-md p-0 hover:bg-white"
-                          onClick={() => onOpenDetail(item)}
-                        >
-                          <Eye className="h-4 w-4" />
-                        </Button>
-                      </TableCell>
+  <div className="flex items-center gap-1">
+    <Button
+      variant="ghost"
+      size="sm"
+      className="h-8 w-8 rounded-md p-0 hover:bg-white"
+      onClick={() => onOpenDetail(item)}
+      title="Lihat detail"
+    >
+      <Eye className="h-4 w-4" />
+    </Button>
+    <Button
+      variant="ghost"
+      size="sm"
+      className="h-8 w-8 rounded-md p-0 hover:bg-teal-50"
+      title="Export ke Katalon (.groovy)"
+      onClick={() => window.open(
+        `/api/automation/export?testCaseId=${encodeURIComponent(item.id)}&format=groovy`,
+        '_blank'
+      )}
+    >
+      <Download className="h-4 w-4 text-teal-600" />
+    </Button>
+  </div>
+</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
