@@ -1063,63 +1063,6 @@ export function TestCaseDetailDialog({
     </div>
   </div>
 ) : null}
-                          <div className="absolute inset-0 flex items-center justify-center bg-slate-950/0 opacity-0 transition group-hover:bg-slate-950/45 group-hover:opacity-100">
-                            <span className="inline-flex items-center gap-2 rounded-md bg-white px-3 py-2 text-[11px] font-bold text-slate-900 shadow-lg">
-                              <Maximize2 className="h-3.5 w-3.5" />
-                              Fullscreen
-                            </span>
-                          </div>
-                        </button>
-                        <div className="flex min-w-0 flex-col justify-between gap-3">
-                          <div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <Film className="h-4 w-4 text-indigo-600" />
-                              <p className="text-xs font-black uppercase tracking-widest text-slate-600">Screen Recording</p>
-                              <Badge variant="outline" className="rounded-md border-indigo-200 bg-indigo-50 text-[10px] font-bold text-indigo-700">
-                                {manualRecording.frames.length} frames
-                              </Badge>
-                              <Badge variant="outline" className="rounded-md border-slate-200 bg-slate-50 text-[10px] font-bold text-slate-600">
-                                {formatRelativeTime(recordingSeekMs)}
-                              </Badge>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                className="ml-auto h-7 gap-1.5 rounded-md border-slate-200 px-2 text-[10px] font-bold"
-                                onClick={openRecordingFullscreen}
-                              >
-                                <Maximize2 className="h-3.5 w-3.5" />
-                                Fullscreen
-                              </Button>
-                            </div>
-                            <p className="mt-2 truncate text-xs text-slate-500">
-                              {manualRecording.targetUrl || 'Manual capture target'}
-                            </p>
-                          </div>
-                          <div className="flex flex-wrap gap-1.5">
-                            {manualRecording.frames
-                              .filter((_, index) => index % Math.max(1, Math.floor(manualRecording.frames.length / 12)) === 0)
-                              .slice(0, 12)
-                              .map((frame) => (
-                                <Button
-                                  key={frame.file}
-                                  type="button"
-                                  variant={selectedRecordingFrame?.file === frame.file ? 'default' : 'outline'}
-                                  size="sm"
-                                  className="h-7 rounded-md px-2 text-[10px]"
-                                  onClick={() => setRecordingSeekMs(frame.relativeMs)}
-                                >
-                                  {formatRelativeTime(frame.relativeMs)}
-                                </Button>
-                              ))}
-                          </div>
-                          <p className="text-[11px] leading-relaxed text-slate-500">
-                            Klik baris Console atau Network yang punya timestamp untuk membuka frame terdekat dari momen tersebut.
-                          </p>
-                        </div>
-                      </div>
-                    ) : null}
-
                     <div className="flex items-center justify-between mb-4 shrink-0">
                       <div className="flex items-center gap-3">
                         <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-slate-900 shadow-lg border border-slate-800">
