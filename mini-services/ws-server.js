@@ -5,10 +5,12 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
-
 const { execFile } = require('child_process');
 
-const FFMPEG_PATH = 'C:\\Users\\hp\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.1.1-full_build\\bin\\ffmpeg.exe';
+// Load environment variables
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
+
+const FFMPEG_PATH = process.env.FFMPEG_PATH || 'ffmpeg';
 
 function convertFramesToVideo(framesDir, outputPath, frameIntervalMs) {
   return new Promise((resolve, reject) => {
@@ -591,13 +593,6 @@ function writeRecordingMetadata(recording) {
   }
 }
 
-  try {
-    fs.writeFileSync(recording.paths.metadata, JSON.stringify(payload, null, 2));
-  } catch (error) {
-    console.error('Failed to write recording metadata:', error.message);
-  }
-}
-
 function startFrameRecorder(session, cdp, targetUrl) {
   const configuredInterval = Number(process.env.QA_RECORDING_INTERVAL_MS);
   const frameIntervalMs = Number.isFinite(configuredInterval)
@@ -764,6 +759,24 @@ function stopFrameRecorder(recording) {
   };
 }
 
+function readRecordingMetadata(testCaseId, sessionId) {
+  for (const paths of [getRecordingPaths(testCaseId, sessionId), getLegacyRecordingPaths(testCaseId, sessionId)]) {
+    if (fs.existsSync(paths.metadata)) {
+      try {
+        return JSON.parse(fs.readFileSync(paths.metadata, 'utf8'));
+      } catch (_) {}
+    }
+  }
+  return null;
+}
+
+function getLatestRecordingMetadata(testCaseId) {
+  const safeTestCaseId = encodeURIComponent(testCaseId);
+  const metadataItems = [];
+  for (const baseDir of [RECORDINGS_DIR, LEGACY_RECORDINGS_DIR]) {
+    const projectDir = path.join(baseDir, safeTestCaseId);
+    if (!fs.existsSync(projectDir)) continue;
+    const sessionDirs = fs.readdirSync(projectDir).map(d => path.join(projectDir, d));
     for (const sessionDir of sessionDirs) {
       const metadataPath = path.join(sessionDir, 'metadata.json');
       if (!fs.existsSync(metadataPath)) continue;

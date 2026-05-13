@@ -392,9 +392,8 @@ function VideoPlayer({ src, targetUrl, compact = true, onClose }: VideoPlayerPro
 
           {/* Center play/pause indicator */}
           <div
-            className={`pointer-events-none absolute inset-0 flex items-center justify-center transition-opacity duration-300 ${
-              showControls || !isPlaying ? 'opacity-100' : 'opacity-0'
-            }`}
+            className={`pointer-events-none absolute inset-0 flex items-center justify-center transition-opacity duration-300 ${showControls || !isPlaying ? 'opacity-100' : 'opacity-0'
+              }`}
           >
             <div className="flex h-20 w-20 items-center justify-center rounded-full bg-black/50 backdrop-blur">
               {isPlaying
@@ -407,9 +406,8 @@ function VideoPlayer({ src, targetUrl, compact = true, onClose }: VideoPlayerPro
 
         {/* Controls */}
         <div
-          className={`shrink-0 border-t border-white/10 bg-black/90 px-5 py-3 backdrop-blur transition-opacity duration-300 ${
-            showControls || !isPlaying ? 'opacity-100' : 'opacity-0'
-          }`}
+          className={`shrink-0 border-t border-white/10 bg-black/90 px-5 py-3 backdrop-blur transition-opacity duration-300 ${showControls || !isPlaying ? 'opacity-100' : 'opacity-0'
+            }`}
           onMouseMove={resetControlsTimer}
         >
           {/* Scrubber */}
@@ -509,9 +507,8 @@ function VideoPlayer({ src, targetUrl, compact = true, onClose }: VideoPlayerPro
 
         {/* Overlay controls */}
         <div
-          className={`absolute inset-0 flex flex-col justify-between bg-gradient-to-t from-black/70 via-transparent to-black/20 p-3 transition-opacity duration-200 ${
-            showControls || !isPlaying ? 'opacity-100' : 'opacity-0'
-          }`}
+          className={`absolute inset-0 flex flex-col justify-between bg-gradient-to-t from-black/70 via-transparent to-black/20 p-3 transition-opacity duration-200 ${showControls || !isPlaying ? 'opacity-100' : 'opacity-0'
+            }`}
         >
           {/* Top bar */}
           <div className="flex items-center justify-between">
@@ -592,6 +589,208 @@ function VideoPlayer({ src, targetUrl, compact = true, onClose }: VideoPlayerPro
               )}
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Frame Player Component (fallback when videoUrl is null) ─────────────────
+interface ManualRecordingFrame {
+  file: string;
+  url: string;
+  relativeMs: number;
+}
+
+interface FramePlayerProps {
+  frames: ManualRecordingFrame[];
+  targetUrl?: string | null;
+  actionLogs?: LogEntry[]; // detail-step logs untuk highlight action timestamps
+  onFullscreen?: () => void;
+}
+
+function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: FramePlayerProps) {
+  const [seekMs, setSeekMs] = useState(0);
+  const timelineRef = useRef<HTMLDivElement>(null);
+
+  const totalMs = frames.length > 0 ? frames[frames.length - 1].relativeMs : 0;
+
+  const selectedFrame = useMemo(() => {
+    if (!frames.length) return null;
+    return frames.reduce((closest, frame) =>
+      Math.abs(frame.relativeMs - seekMs) < Math.abs(closest.relativeMs - seekMs) ? frame : closest
+      , frames[0]);
+  }, [frames, seekMs]);
+
+  const formatMs = (ms: number) => {
+    const totalSec = Math.floor(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  };
+
+  // Action timestamps dari detail-step logs
+  const actionTimestamps = useMemo(() =>
+    actionLogs
+      .filter((log) => typeof log.relativeMs === 'number')
+      .map((log) => ({
+        relativeMs: log.relativeMs as number,
+        label: log.detailStep?.label || log.detailStep?.action || 'Action',
+        action: log.detailStep?.action,
+      })),
+    [actionLogs]
+  );
+
+  const progress = totalMs > 0 ? (seekMs / totalMs) * 100 : 0;
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+      {/* Frame display */}
+      <div className="relative bg-black" style={{ aspectRatio: '16/9' }}>
+        {selectedFrame ? (
+          <img
+            src={`http://127.0.0.1:3001${selectedFrame.url}`}
+            alt="Recording frame"
+            className="h-full w-full object-contain select-none"
+            draggable={false}
+          />
+        ) : (
+          <div className="flex h-full items-center justify-center text-slate-600">
+            <Film className="h-8 w-8 opacity-20" />
+          </div>
+        )}
+
+        {/* Top overlay */}
+        <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/60 to-transparent p-3">
+          <div className="flex items-center gap-2">
+            <Film className="h-3.5 w-3.5 text-indigo-300" />
+            <span className="text-[10px] font-black uppercase tracking-widest text-white/80">Screen Recording</span>
+            <Badge variant="outline" className="rounded border-indigo-400/30 bg-indigo-950/70 text-[9px] font-bold text-indigo-200">
+              {frames.length} FRAMES
+            </Badge>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <Badge variant="outline" className="rounded border-slate-600 bg-slate-900/70 text-[9px] font-bold text-slate-300">
+              {formatMs(seekMs)}
+            </Badge>
+            {onFullscreen && (
+              <Button
+                type="button" variant="ghost" size="sm"
+                className="h-7 w-7 rounded-md bg-black/40 p-0 text-white/70 hover:bg-black/60 hover:text-white"
+                onClick={onFullscreen}
+              >
+                <Maximize2 className="h-3.5 w-3.5" />
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {/* Bottom timestamp */}
+        {targetUrl && (
+          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-transparent px-3 pb-2 pt-4">
+            <p className="truncate text-[9px] text-white/40">{targetUrl}</p>
+          </div>
+        )}
+      </div>
+
+      {/* Controls */}
+      <div className="border-t border-slate-100 bg-slate-50 px-4 py-3 space-y-3">
+        {/* Scrubber with action markers */}
+        <div className="space-y-1.5">
+          <div className="relative h-5">
+            {/* Track */}
+            <div className="absolute top-1/2 left-0 right-0 h-1.5 -translate-y-1/2 overflow-hidden rounded-full bg-slate-200">
+              <div className="h-full rounded-full bg-indigo-500 transition-all" style={{ width: `${progress}%` }} />
+            </div>
+
+            {/* Action markers */}
+            {actionTimestamps.map((action, i) => {
+              const pct = totalMs > 0 ? (action.relativeMs / totalMs) * 100 : 0;
+              const isActive = selectedFrame && Math.abs(action.relativeMs - seekMs) < 500;
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  title={`${action.label} @ ${formatMs(action.relativeMs)}`}
+                  className={`absolute top-1/2 h-3.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-sm transition-all ${action.action === 'click'
+                      ? isActive ? 'bg-rose-500 scale-125' : 'bg-rose-400/80 hover:bg-rose-500'
+                      : isActive ? 'bg-emerald-500 scale-125' : 'bg-emerald-400/80 hover:bg-emerald-500'
+                    }`}
+                  style={{ left: `${pct}%` }}
+                  onClick={() => setSeekMs(action.relativeMs)}
+                />
+              );
+            })}
+
+            {/* Invisible range input on top */}
+            <input
+              type="range"
+              min="0"
+              max={totalMs || 0}
+              step="100"
+              value={seekMs}
+              onChange={(e) => setSeekMs(Number(e.target.value))}
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            />
+          </div>
+
+          <div className="flex justify-between text-[9px] font-bold text-slate-400">
+            <span>{formatMs(0)}</span>
+            <span>{formatMs(totalMs)}</span>
+          </div>
+        </div>
+
+        {/* Action thumbnail strip */}
+        {actionTimestamps.length > 0 && (
+          <div className="space-y-1">
+            <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">Actions ({actionTimestamps.length})</p>
+            <div ref={timelineRef} className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+              {actionTimestamps.map((action, i) => {
+                const isActive = Math.abs(action.relativeMs - seekMs) < 500;
+                return (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setSeekMs(action.relativeMs)}
+                    className={`shrink-0 flex items-center gap-1 rounded-md border px-2 py-1 text-[9px] font-bold transition-all ${isActive
+                        ? 'border-indigo-500/40 bg-indigo-950 text-indigo-200'
+                        : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-700'
+                      }`}
+                  >
+                    {action.action === 'click'
+                      ? <MousePointerClick className="h-2.5 w-2.5" />
+                      : <Keyboard className="h-2.5 w-2.5" />
+                    }
+                    <span className="max-w-[80px] truncate">{action.label}</span>
+                    <span className="opacity-60">{formatMs(action.relativeMs)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Frame thumbnail strip */}
+        <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-none">
+          {frames
+            .filter((_, i) => i % Math.max(1, Math.floor(frames.length / 10)) === 0)
+            .slice(0, 10)
+            .map((frame) => {
+              const isActive = selectedFrame?.file === frame.file;
+              return (
+                <button
+                  key={frame.file}
+                  type="button"
+                  onClick={() => setSeekMs(frame.relativeMs)}
+                  className={`shrink-0 rounded border text-[9px] font-bold px-1.5 py-0.5 transition-all ${isActive
+                      ? 'border-indigo-500 bg-indigo-600 text-white'
+                      : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'
+                    }`}
+                >
+                  {formatMs(frame.relativeMs)}
+                </button>
+              );
+            })}
         </div>
       </div>
     </div>
@@ -762,8 +961,10 @@ export function TestCaseDetailDialog({
   const captureScriptUrl = typeof window !== 'undefined' ? `${window.location.origin}/qa-capture.js` : '/qa-capture.js';
   const captureScriptTag = `<script defer src="${captureScriptUrl}"></script>`;
 
-  // Video source — prefer manualRecording.videoUrl
+  // Hybrid recording: prefer videoUrl, fallback to frames
   const videoSrc = manualRecording?.videoUrl ?? null;
+  const hasFrames = (manualRecording?.frames?.length ?? 0) > 0;
+  const hasRecording = videoSrc !== null || hasFrames;
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1172,26 +1373,35 @@ export function TestCaseDetailDialog({
                         </div>
                       </div>
 
-                      {/* ── VIDEO PLAYER (inline compact) ── */}
-                      {videoSrc && (
+                      {/* ── RECORDING PREVIEW: Video atau Frame-based ── */}
+                      {hasRecording && (
                         <div className="mb-4">
-                          <VideoPlayer
-                            src={videoSrc}
-                            targetUrl={manualRecording?.targetUrl}
-                            compact={true}
-                            onClose={() => setIsVideoFullscreen(false)}
-                          />
-                          {/* Fullscreen launch button below player */}
-                          <div className="flex justify-end mt-1">
-                            <Button
-                              type="button" variant="outline" size="sm"
-                              className="h-7 gap-1.5 rounded-md border-slate-200 px-2 text-[10px] font-bold text-slate-600 hover:text-indigo-600 hover:border-indigo-200"
-                              onClick={() => setIsVideoFullscreen(true)}
-                            >
-                              <Maximize2 className="h-3 w-3" />
-                              Buka Fullscreen
-                            </Button>
-                          </div>
+                          {videoSrc ? (
+                            <>
+                              <VideoPlayer
+                                src={videoSrc}
+                                targetUrl={manualRecording?.targetUrl}
+                                compact={true}
+                                onClose={() => setIsVideoFullscreen(false)}
+                              />
+                              <div className="flex justify-end mt-1">
+                                <Button
+                                  type="button" variant="outline" size="sm"
+                                  className="h-7 gap-1.5 rounded-md border-slate-200 px-2 text-[10px] font-bold text-slate-600 hover:text-indigo-600 hover:border-indigo-200"
+                                  onClick={() => setIsVideoFullscreen(true)}
+                                >
+                                  <Maximize2 className="h-3 w-3" />
+                                  Buka Fullscreen
+                                </Button>
+                              </div>
+                            </>
+                          ) : hasFrames ? (
+                            <FramePlayer
+                              frames={manualRecording!.frames}
+                              targetUrl={manualRecording?.targetUrl}
+                              actionLogs={detailStepRows}
+                            />
+                          ) : null}
                         </div>
                       )}
 

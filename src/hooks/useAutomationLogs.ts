@@ -59,6 +59,8 @@ export interface ManualRecordingMeta {
   frameIntervalMs: number;
   status: 'recording' | 'stopped';
   frames: ManualRecordingFrame[];
+  videoUrl?: string | null;
+  videoPath?: string | null;
 }
 
 const DEBUG_AUTOMATION_LOGS = false;
@@ -174,8 +176,14 @@ export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
         setManualRecording(null);
         return null;
       }
-      setManualRecording(data.recording);
-      return data.recording as ManualRecordingMeta;
+
+      const recording = data.recording;
+      if (recording.videoUrl && !recording.videoUrl.startsWith('http')) {
+        recording.videoUrl = `${RELAY_HTTP_URL}${recording.videoUrl}`;
+      }
+
+      setManualRecording(recording);
+      return recording as ManualRecordingMeta;
     } catch {
       setManualRecording(null);
       return null;
@@ -491,19 +499,6 @@ export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
           ? `Browser ditutup dan ${frameCount} frame recording tersimpan.`
           : 'Browser ditutup dan log berikutnya dari session ini akan ditolak relay.',
       });
-      return {
-  ...
-  filterConsoleLogs,
-  filterNetworkLogs,   // ← baris ini
-};
-
-// SESUDAH — tambahkan 1 baris:
-return {
-  ...
-  filterConsoleLogs,
-  filterNetworkLogs,
-  filterDetailStepLogs,  // ← TAMBAHKAN INI
-};
     } catch (error: any) {
       toast({
         title: 'Gagal stop manual capture',
@@ -516,34 +511,34 @@ return {
   };
 
   return {
-  socketReady,
-  liveLogs,
-  activeDevLogTab,
-  expandedLogId,
-  isLoadingHistory,
-  loadedRunLabel,
-  aiSummary,
-  isSummarizing,
-  manualCaptureTargetUrl,
-  manualCaptureSessionId,
-  manualRecording,
-  isManualCaptureActive,
-  isStartingManualCapture,
-  isStoppingManualCapture,
-  logEndRef,
-  setManualCaptureTargetUrl,
-  setActiveDevLogTab,
-  setExpandedLogId,
-  setAiSummary,
-  clearLogs,
-  startManualCapture,
-  stopManualCapture,
-  loadCurrentLogRun,
-  loadLatestRecording,
-  generateAISummary,
-  loadLogHistory,
-  filterConsoleLogs,
-  filterNetworkLogs,
-  filterDetailStepLogs,
-};
+    socketReady,
+    liveLogs,
+    activeDevLogTab,
+    expandedLogId,
+    isLoadingHistory,
+    loadedRunLabel,
+    aiSummary,
+    isSummarizing,
+    manualCaptureTargetUrl,
+    manualCaptureSessionId,
+    manualRecording,
+    isManualCaptureActive,
+    isStartingManualCapture,
+    isStoppingManualCapture,
+    logEndRef,
+    setManualCaptureTargetUrl,
+    setActiveDevLogTab,
+    setExpandedLogId,
+    setAiSummary,
+    clearLogs,
+    startManualCapture,
+    stopManualCapture,
+    loadCurrentLogRun,
+    loadLatestRecording,
+    generateAISummary,
+    loadLogHistory,
+    filterConsoleLogs,
+    filterNetworkLogs,
+    filterDetailStepLogs,
+  };
 }
