@@ -544,6 +544,6 @@ return {
   loadLogHistory,
   filterConsoleLogs,
   filterNetworkLogs,
-  filterDetailStepLogs, // ← TAMBAH INI
+  filterDetailStepLogs,
 };
 }
