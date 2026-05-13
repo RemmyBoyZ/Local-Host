@@ -490,6 +490,19 @@ export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
           ? `Browser ditutup dan ${frameCount} frame recording tersimpan.`
           : 'Browser ditutup dan log berikutnya dari session ini akan ditolak relay.',
       });
+      return {
+  ...
+  filterConsoleLogs,
+  filterNetworkLogs,   // ← baris ini
+};
+
+// SESUDAH — tambahkan 1 baris:
+return {
+  ...
+  filterConsoleLogs,
+  filterNetworkLogs,
+  filterDetailStepLogs,  // ← TAMBAHKAN INI
+};
     } catch (error: any) {
       toast({
         title: 'Gagal stop manual capture',
