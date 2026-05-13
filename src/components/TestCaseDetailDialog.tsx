@@ -377,6 +377,10 @@ export function TestCaseDetailDialog({
   const [recordingZoom, setRecordingZoom] = useState(1);
   const [isRecordingFullscreen, setIsRecordingFullscreen] = useState(false);
   const [isClosingRecordingFullscreen, setIsClosingRecordingFullscreen] = useState(false);
+  const [recordingVideoUrl, setRecordingVideoUrl] = useState<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
+  const [videoCurrentTime, setVideoCurrentTime] = useState(0);
   const [networkFilters, setNetworkFilters] = useState<NetworkFilterState>(DEFAULT_NETWORK_FILTERS);
   const [detailStepEdits, setDetailStepEdits] = useState<Record<string, Partial<DetailStepData>>>({});
   const [deletedDetailStepKeys, setDeletedDetailStepKeys] = useState<Set<string>>(() => new Set());
@@ -1000,20 +1004,65 @@ export function TestCaseDetailDialog({
                       </div>
                     </div>
 
-                    {manualRecording?.frames?.length ? (
-                      <div className="mb-4 grid gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm lg:grid-cols-[280px_1fr]">
-                        <button
-                          type="button"
-                          className="group relative overflow-hidden rounded-lg border border-slate-200 bg-slate-950 text-left"
-                          onClick={openRecordingFullscreen}
-                        >
-                          {selectedRecordingFrame && (
-                            <img
-                              src={`http://127.0.0.1:3001${selectedRecordingFrame.url}`}
-                              alt="Manual capture recording frame"
-                              className="aspect-video w-full bg-slate-950 object-contain"
-                            />
-                          )}
+                   {/* === VIDEO RECORDING PREVIEW === */}
+{manualRecording?.videoUrl || recordingVideoUrl ? (
+  <div className="mb-4 grid gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm lg:grid-cols-[280px_1fr]">
+    <div className="relative group rounded-lg overflow-hidden bg-black aspect-video">
+      <video
+        ref={videoRef}
+        src={manualRecording?.videoUrl || recordingVideoUrl}
+        className="w-full h-full object-contain"
+        onTimeUpdate={(e) => setVideoCurrentTime(e.currentTarget.currentTime * 1000)}
+        onPlay={() => setIsVideoPlaying(true)}
+        onPause={() => setIsVideoPlaying(false)}
+        onEnded={() => setIsVideoPlaying(false)}
+      />
+
+      <button
+        onClick={() => {
+          if (videoRef.current) {
+            if (isVideoPlaying) videoRef.current.pause();
+            else videoRef.current.play();
+          }
+        }}
+        className="absolute inset-0 flex items-center justify-center bg-black/30 hover:bg-black/50 transition-all"
+      >
+        <div className="w-16 h-16 bg-white/90 hover:bg-white rounded-full flex items-center justify-center text-4xl shadow-xl">
+          {isVideoPlaying ? '⏸️' : '▶️'}
+        </div>
+      </button>
+    </div>
+
+    <div className="flex min-w-0 flex-col justify-between gap-3">
+      <div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Film className="h-4 w-4 text-indigo-600" />
+          <p className="text-xs font-black uppercase tracking-widest text-slate-600">Screen Recording</p>
+          <Badge variant="outline" className="rounded-md border-indigo-200 bg-indigo-50 text-[10px] font-bold text-indigo-700">
+            VIDEO
+          </Badge>
+        </div>
+        <p className="mt-2 truncate text-xs text-slate-500">
+          {manualRecording?.targetUrl || 'Manual capture target'}
+        </p>
+      </div>
+
+      {/* Timeline sederhana */}
+      <input
+        type="range"
+        min="0"
+        max={videoRef.current?.duration ? videoRef.current.duration * 1000 : 100}
+        value={videoCurrentTime}
+        onChange={(e) => {
+          if (videoRef.current) {
+            videoRef.current.currentTime = Number(e.target.value) / 1000;
+          }
+        }}
+        className="w-full accent-indigo-600"
+      />
+    </div>
+  </div>
+) : null}
                           <div className="absolute inset-0 flex items-center justify-center bg-slate-950/0 opacity-0 transition group-hover:bg-slate-950/45 group-hover:opacity-100">
                             <span className="inline-flex items-center gap-2 rounded-md bg-white px-3 py-2 text-[11px] font-bold text-slate-900 shadow-lg">
                               <Maximize2 className="h-3.5 w-3.5" />
