@@ -611,9 +611,16 @@ interface FramePlayerProps {
 
 function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: FramePlayerProps) {
   const [seekMs, setSeekMs] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const timelineRef = useRef<HTMLDivElement>(null);
+  const playIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const totalMs = frames.length > 0 ? frames[frames.length - 1].relativeMs : 0;
+  // Interval antar frame saat playback — estimasi dari data frame atau default 200ms
+  const frameIntervalMs = frames.length > 1
+    ? Math.round((frames[frames.length - 1].relativeMs - frames[0].relativeMs) / (frames.length - 1))
+    : 200;
 
   const selectedFrame = useMemo(() => {
     if (!frames.length) return null;
@@ -643,10 +650,53 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
 
   const progress = totalMs > 0 ? (seekMs / totalMs) * 100 : 0;
 
+  // Play/pause logic — advance seekMs by frameIntervalMs each tick
+  useEffect(() => {
+    if (playIntervalRef.current) clearInterval(playIntervalRef.current);
+    if (!isPlaying) return;
+
+    const tickMs = Math.max(50, frameIntervalMs / playbackSpeed);
+    playIntervalRef.current = setInterval(() => {
+      setSeekMs((prev) => {
+        const next = prev + frameIntervalMs;
+        if (next >= totalMs) {
+          setIsPlaying(false);
+          return totalMs;
+        }
+        return next;
+      });
+    }, tickMs);
+
+    return () => {
+      if (playIntervalRef.current) clearInterval(playIntervalRef.current);
+    };
+  }, [isPlaying, frameIntervalMs, playbackSpeed, totalMs]);
+
+  // Stop playback jika seek manual
+  const handleSeek = (val: number) => {
+    setIsPlaying(false);
+    setSeekMs(val);
+  };
+
+  const togglePlay = () => {
+    // Restart dari awal kalau sudah di akhir
+    if (!isPlaying && seekMs >= totalMs) setSeekMs(0);
+    setIsPlaying((p) => !p);
+  };
+
+  const skipToAction = (ms: number) => {
+    setIsPlaying(false);
+    setSeekMs(ms);
+  };
+
   return (
     <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
       {/* Frame display */}
-      <div className="relative bg-black" style={{ aspectRatio: '16/9' }}>
+      <div
+        className="relative bg-black cursor-pointer"
+        style={{ aspectRatio: '16/9' }}
+        onClick={togglePlay}
+      >
         {selectedFrame ? (
           <img
             src={`http://127.0.0.1:3001${selectedFrame.url}`}
@@ -660,6 +710,16 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
           </div>
         )}
 
+        {/* Center play/pause indicator */}
+        <div className={`pointer-events-none absolute inset-0 flex items-center justify-center transition-opacity duration-200 ${isPlaying ? 'opacity-0' : 'opacity-100'}`}>
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-black/50 backdrop-blur ring-2 ring-white/20">
+            {isPlaying
+              ? <Pause className="h-6 w-6 text-white" />
+              : <Play className="h-6 w-6 translate-x-0.5 text-white" />
+            }
+          </div>
+        </div>
+
         {/* Top overlay */}
         <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/60 to-transparent p-3">
           <div className="flex items-center gap-2">
@@ -669,7 +729,7 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
               {frames.length} FRAMES
             </Badge>
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
             <Badge variant="outline" className="rounded border-slate-600 bg-slate-900/70 text-[9px] font-bold text-slate-300">
               {formatMs(seekMs)}
             </Badge>
@@ -717,7 +777,7 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
                       : isActive ? 'bg-emerald-500 scale-125' : 'bg-emerald-400/80 hover:bg-emerald-500'
                     }`}
                   style={{ left: `${pct}%` }}
-                  onClick={() => setSeekMs(action.relativeMs)}
+                  onClick={() => skipToAction(action.relativeMs)}
                 />
               );
             })}
@@ -729,14 +789,62 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
               max={totalMs || 0}
               step="100"
               value={seekMs}
-              onChange={(e) => setSeekMs(Number(e.target.value))}
+              onChange={(e) => handleSeek(Number(e.target.value))}
               className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
             />
           </div>
 
-          <div className="flex justify-between text-[9px] font-bold text-slate-400">
-            <span>{formatMs(0)}</span>
-            <span>{formatMs(totalMs)}</span>
+          <div className="flex items-center justify-between">
+            <span className="text-[9px] font-bold text-slate-400">{formatMs(seekMs)}</span>
+            <span className="text-[9px] font-bold text-slate-400">{formatMs(totalMs)}</span>
+          </div>
+        </div>
+
+        {/* Playback controls row */}
+        <div className="flex items-center gap-2">
+          {/* Play/Pause */}
+          <Button
+            type="button" variant="outline" size="sm"
+            className="h-8 w-8 rounded-full border-slate-300 p-0 text-slate-700 hover:bg-slate-100"
+            onClick={togglePlay}
+          >
+            {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5 translate-x-px" />}
+          </Button>
+
+          {/* Skip back to first frame */}
+          <Button
+            type="button" variant="ghost" size="sm"
+            className="h-7 w-7 p-0 text-slate-500 hover:text-slate-700"
+            onClick={() => handleSeek(0)}
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
+          </Button>
+
+          {/* Skip to end */}
+          <Button
+            type="button" variant="ghost" size="sm"
+            className="h-7 w-7 p-0 text-slate-500 hover:text-slate-700"
+            onClick={() => handleSeek(totalMs)}
+          >
+            <ChevronRight className="h-3.5 w-3.5" />
+          </Button>
+
+          {/* Playback speed */}
+          <div className="ml-auto flex items-center gap-1">
+            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Speed</span>
+            {[0.5, 1, 2, 4].map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setPlaybackSpeed(s)}
+                className={`rounded px-1.5 py-0.5 text-[9px] font-bold transition-all ${playbackSpeed === s
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-slate-200 text-slate-500 hover:bg-slate-300'
+                  }`}
+              >
+                {s}x
+              </button>
+            ))}
           </div>
         </div>
 
@@ -751,7 +859,7 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
                   <button
                     key={i}
                     type="button"
-                    onClick={() => setSeekMs(action.relativeMs)}
+                    onClick={() => skipToAction(action.relativeMs)}
                     className={`shrink-0 flex items-center gap-1 rounded-md border px-2 py-1 text-[9px] font-bold transition-all ${isActive
                         ? 'border-indigo-500/40 bg-indigo-950 text-indigo-200'
                         : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-700'
