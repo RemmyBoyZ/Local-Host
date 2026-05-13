@@ -106,6 +106,7 @@ function normalizeLogEntry(message: AutomationLogEntry): AutomationLogEntry {
 }
 
 export const filterConsoleLogs = (logs: AutomationLogEntry[]) => logs.filter(log => log.isConsole);
+
 export const filterDetailStepLogs = (logs: AutomationLogEntry[]) => logs.filter(log => log.isDetailStep);
 
 export const filterNetworkLogs = (logs: AutomationLogEntry[]) => logs.filter(log => {
@@ -515,33 +516,34 @@ return {
   };
 
   return {
-    socketReady,
-    liveLogs,
-    activeDevLogTab,
-    expandedLogId,
-    isLoadingHistory,
-    loadedRunLabel,
-    aiSummary,
-    isSummarizing,
-    manualCaptureTargetUrl,
-    manualCaptureSessionId,
-    manualRecording,
-    isManualCaptureActive,
-    isStartingManualCapture,
-    isStoppingManualCapture,
-    logEndRef,
-    setManualCaptureTargetUrl,
-    setActiveDevLogTab,
-    setExpandedLogId,
-    setAiSummary,
-    clearLogs,
-    startManualCapture,
-    stopManualCapture,
-    loadCurrentLogRun,
-    loadLatestRecording,
-    generateAISummary,
-    loadLogHistory,
-    filterConsoleLogs,
-    filterNetworkLogs,
-  };
+  socketReady,
+  liveLogs,
+  activeDevLogTab,
+  expandedLogId,
+  isLoadingHistory,
+  loadedRunLabel,
+  aiSummary,
+  isSummarizing,
+  manualCaptureTargetUrl,
+  manualCaptureSessionId,
+  manualRecording,
+  isManualCaptureActive,
+  isStartingManualCapture,
+  isStoppingManualCapture,
+  logEndRef,
+  setManualCaptureTargetUrl,
+  setActiveDevLogTab,
+  setExpandedLogId,
+  setAiSummary,
+  clearLogs,
+  startManualCapture,
+  stopManualCapture,
+  loadCurrentLogRun,
+  loadLatestRecording,
+  generateAISummary,
+  loadLogHistory,
+  filterConsoleLogs,
+  filterNetworkLogs,
+  filterDetailStepLogs, // ← TAMBAH INI
+};
 }

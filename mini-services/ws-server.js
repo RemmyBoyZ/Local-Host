@@ -231,7 +231,7 @@ function redactPayload(value) {
 
 function redactHeaders(headers = {}) {
   const output = {};
-  for (const [key, value] of Object.entries(headers || {})) {
+       for (const [key, value] of Object.entries(headers || {})) {
     output[key] = isSensitiveKey(key)
       ? '[REDACTED]'
       : value;
