@@ -1,9 +1,7 @@
 'use client';
 
-import { Bot, CalendarClock, Eye, FileClock, MonitorDot, RefreshCw, Search, TerminalSquare } from 'lucide-react';
-import { Bot, CalendarClock, Download, Eye, FileClock, MonitorDot, RefreshCw, Search, TerminalSquare } from 'lucide-react';
 import type React from 'react';
-import { Bot, CalendarClock, Eye, FileClock, MonitorDot, RefreshCw, Search, TerminalSquare } from 'lucide-react';
+import { Bot, CalendarClock, Download, Eye, FileClock, MonitorDot, RefreshCw, Search, TerminalSquare } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
