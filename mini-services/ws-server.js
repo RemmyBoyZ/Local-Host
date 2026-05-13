@@ -314,19 +314,7 @@ function buildManualStepCaptureScript(session, relay = 'http://127.0.0.1:3001') 
       timestamp: new Date().toISOString(),
       ...payload,
     };
-    
-// SESUDAH — tambahkan 2 field:
-const step = {
-  action,
-  label: getElementLabel(element),
-  value: valueOverride !== undefined ? valueOverride : getElementValue(element),
-  selector: getElementSelector(element),
-  tagName: element.tagName.toLowerCase(),
-  inputType: element.type || '',
-  url: window.location.href,
-  isIframe: window !== window.top,                              // ← TAMBAH
-  frameId: window.frameElement?.id || window.frameElement?.name || null,  // ← TAMBAH
-};
+
     try {
       fetch(config.relay.replace(/\\/$/, '') + '/log', {
         method: 'POST',
@@ -337,16 +325,23 @@ const step = {
     } catch (_) {}
   };
   const emitDetailStep = (action, element, valueOverride) => {
-    if (!element?.tagName) return;
-    const step = {
-      action,
-      label: getElementLabel(element),
-      value: valueOverride !== undefined ? valueOverride : getElementValue(element),
-      selector: getElementSelector(element),
-      tagName: element.tagName.toLowerCase(),
-      inputType: element.type || '',
-      url: window.location.href,
-    };
+  if (!element?.tagName) return;
+  const step = {
+    action,
+    label: getElementLabel(element),
+    value: valueOverride !== undefined ? valueOverride : getElementValue(element),
+    selector: getElementSelector(element),
+    tagName: element.tagName.toLowerCase(),
+    inputType: element.type || '',
+    url: window.location.href,
+    isIframe: window !== window.top,                                        // ← tambah di sini
+    frameId: window.frameElement?.id || window.frameElement?.name || null,  // ← tambah di sini
+  };
+  sendLog({
+    detailStep: step,
+    log: (action === 'click' ? 'Click' : 'Input') + (step.label ? ': ' + step.label : ''),
+  });
+};
     sendLog({
       detailStep: step,
       log: (action === 'click' ? 'Click' : 'Input') + (step.label ? ': ' + step.label : ''),
