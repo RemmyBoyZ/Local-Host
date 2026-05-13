@@ -6,6 +6,35 @@ const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
 
+const { execFile } = require('child_process');
+
+const FFMPEG_PATH = 'C:\\Users\\hp\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.1.1-full_build\\bin\\ffmpeg.exe';
+
+function convertFramesToVideo(framesDir, outputPath, frameIntervalMs) {
+  return new Promise((resolve, reject) => {
+    const fps = Math.max(1, Math.round(1000 / frameIntervalMs));
+    const args = [
+      '-y',
+      '-framerate', String(fps),
+      '-i', path.join(framesDir, '%06d.jpg'),
+      '-c:v', 'libx264',
+      '-pix_fmt', 'yuv420p',
+      '-preset', 'fast',
+      '-crf', '28',
+      outputPath,
+    ];
+    execFile(FFMPEG_PATH, args, (error) => {
+      if (error) {
+        console.error('[FFmpeg] Convert failed:', error.message);
+        reject(error);
+      } else {
+        console.log('[FFmpeg] Video generated:', outputPath);
+        resolve(outputPath);
+      }
+    });
+  });
+}
+
 const wss = new WebSocketServer({ noServer: true });
 const clients = new Set();
 const activeManualSessions = new Map();
@@ -231,7 +260,7 @@ function redactPayload(value) {
 
 function redactHeaders(headers = {}) {
   const output = {};
-       for (const [key, value] of Object.entries(headers || {})) {
+  for (const [key, value] of Object.entries(headers || {})) {
     output[key] = isSensitiveKey(key)
       ? '[REDACTED]'
       : value;
@@ -703,6 +732,26 @@ function stopFrameRecorder(recording) {
   recording.status = 'stopped';
   recording.stoppedAt = new Date().toISOString();
   writeRecordingMetadata(recording);
+
+  const videoPath = path.join(recording.paths.baseDir, 'recording.mp4');
+  const videoUrl = `/recordings/${encodeURIComponent(recording.testCaseId)}/${encodeURIComponent(recording.sessionId)}/video`;
+
+  if (recording.frames.length > 0) {
+    convertFramesToVideo(recording.paths.framesDir, videoPath, recording.frameIntervalMs)
+      .then(() => {
+        recording.videoPath = videoPath;
+        recording.videoUrl = videoUrl;
+        writeRecordingMetadata(recording);
+        fs.rm(recording.paths.framesDir, { recursive: true, force: true }, () => {
+          console.log('[FFmpeg] Frames cleaned up');
+        });
+      })
+      .catch((error) => {
+        console.error('[FFmpeg] Keeping frames due to error:', error.message);
+        writeRecordingMetadata(recording);
+      });
+  }
+
   return {
     sessionId: recording.sessionId,
     testCaseId: recording.testCaseId,
@@ -710,30 +759,6 @@ function stopFrameRecorder(recording) {
     metadataUrl: `/recordings/${encodeURIComponent(recording.testCaseId)}/${encodeURIComponent(recording.sessionId)}/metadata`,
   };
 }
-
-function readRecordingMetadata(testCaseId, sessionId) {
-  for (const paths of [getRecordingPaths(testCaseId, sessionId), getLegacyRecordingPaths(testCaseId, sessionId)]) {
-    if (!fs.existsSync(paths.metadata)) continue;
-    try {
-      return JSON.parse(fs.readFileSync(paths.metadata, 'utf8'));
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-function getLatestRecordingMetadata(testCaseId) {
-  const roots = [RECORDINGS_DIR, LEGACY_RECORDINGS_DIR];
-  const metadataItems = [];
-
-  for (const root of roots) {
-    const testCaseDir = path.join(root, encodeURIComponent(testCaseId));
-    if (!fs.existsSync(testCaseDir)) continue;
-
-    const sessionDirs = fs.readdirSync(testCaseDir, { withFileTypes: true })
-      .filter(entry => entry.isDirectory())
-      .map(entry => path.join(testCaseDir, entry.name));
 
     for (const sessionDir of sessionDirs) {
       const metadataPath = path.join(sessionDir, 'metadata.json');
