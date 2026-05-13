@@ -314,16 +314,7 @@ function buildManualStepCaptureScript(session, relay = 'http://127.0.0.1:3001') 
       timestamp: new Date().toISOString(),
       ...payload,
     };
-    const step = {
-  action,
-  label: getElementLabel(element),
-  value: valueOverride !== undefined ? valueOverride : getElementValue(element),
-  selector: getElementSelector(element),
-  tagName: element.tagName.toLowerCase(),
-  inputType: element.type || '',
-  url: window.location.href,
-};
-
+    
 // SESUDAH — tambahkan 2 field:
 const step = {
   action,
