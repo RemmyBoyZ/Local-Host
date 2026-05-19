@@ -23,6 +23,7 @@ import { AIRefineDialog } from '@/components/AIRefineDialog';
 import { BulkStatusDialog } from '@/components/BulkStatusDialog';
 import { ProjectModuleDialogs } from '@/components/ProjectModuleDialogs';
 import { SettingsPanel } from '@/components/SettingsPanel';
+import { ApiExecutorPanel } from '@/components/ApiExecutorPanel';
 import { useAutomationLogs } from '@/hooks/useAutomationLogs';
 import { useTestCaseData } from '@/hooks/useTestCaseData';
 import { useAIHandlers } from '@/hooks/useAIHandlers';
@@ -334,6 +335,9 @@ export default function TestCaseManager() {
               getPriorityColor={getPriorityColor}
               getTestTypeColor={getTestTypeColor}
             />
+          ),
+          apiexecutor: (
+            <ApiExecutorPanel selectedProject={selectedProject} />
           ),
           settings: (
             <SettingsPanel

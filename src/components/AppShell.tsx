@@ -1,6 +1,6 @@
 'use client';
 
-import { Bug, ClipboardList, FolderOpen, LayoutDashboard, MonitorDot, Settings2, Sparkles } from 'lucide-react';
+import { Bug, ClipboardList, FolderOpen, LayoutDashboard, MonitorDot, Play, Settings2, Sparkles } from 'lucide-react';
 import { ReactNode } from 'react';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -29,6 +29,7 @@ interface AppShellProps {
     testcases: ReactNode;
     bugfix: ReactNode;
     automated: ReactNode;
+    apiexecutor: ReactNode;
     settings: ReactNode;
   };
 }
@@ -86,6 +87,9 @@ export function AppShell({
               <TabsTrigger value="automated" className="gap-2 rounded-md data-[state=active]:bg-slate-950 data-[state=active]:text-white data-[state=active]:shadow-sm px-4 py-2 text-sm font-semibold">
                 <MonitorDot className="w-4 h-4" /> Test Records
               </TabsTrigger>
+              <TabsTrigger value="apiexecutor" className="gap-2 rounded-md data-[state=active]:bg-slate-950 data-[state=active]:text-white data-[state=active]:shadow-sm px-4 py-2 text-sm font-semibold">
+                <Play className="w-4 h-4" /> API Executor
+              </TabsTrigger>
               <TabsTrigger value="settings" className="gap-2 rounded-md data-[state=active]:bg-slate-950 data-[state=active]:text-white data-[state=active]:shadow-sm px-4 py-2 text-sm font-semibold">
                 <Settings2 className="w-4 h-4" /> Pengaturan
               </TabsTrigger>
@@ -108,6 +112,7 @@ export function AppShell({
           <TabsContent value="testcases">{activeTab === 'testcases' ? children.testcases : null}</TabsContent>
           <TabsContent value="bugfix">{activeTab === 'bugfix' ? children.bugfix : null}</TabsContent>
           <TabsContent value="automated">{activeTab === 'automated' ? children.automated : null}</TabsContent>
+          <TabsContent value="apiexecutor">{activeTab === 'apiexecutor' ? children.apiexecutor : null}</TabsContent>
           <TabsContent value="settings">{activeTab === 'settings' ? children.settings : null}</TabsContent>
         </Tabs>
       </main>
