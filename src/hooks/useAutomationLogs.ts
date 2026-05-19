@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useToast } from '@/hooks/use-toast';
 
-export type DevLogTab = 'console' | 'network' | 'execution' | 'detail-step';
+export type DevLogTab = 'console' | 'network' | 'execution' | 'detail-step' | 'timeline';
 
 export interface AutomationLogEntry {
   id?: string;
@@ -151,7 +151,7 @@ export function useAutomationLogs<TTestCase extends AutomationLogTestCase>({
   const currentViewIdRef = useRef<string | null>(null);
   const [socketReady, setSocketReady] = useState(false);
   const [liveLogs, setLiveLogs] = useState<AutomationLogEntry[]>([]);
-  const [activeDevLogTab, setActiveDevLogTab] = useState<DevLogTab>('execution');
+  const [activeDevLogTab, setActiveDevLogTab] = useState<DevLogTab>('timeline');
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [loadedRunLabel, setLoadedRunLabel] = useState<'current' | 'previous' | 'live'>('live');
