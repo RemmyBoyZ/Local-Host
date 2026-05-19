@@ -18,7 +18,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TestCase } from '@/components/TestCaseTable';
 import type { ManualRecordingMeta } from '@/hooks/useAutomationLogs';
 
-type DevLogTab = 'console' | 'network' | 'execution' | 'detail-step';
+// ── CHANGE 1: tambah 'timeline' ke DevLogTab ──
+type DevLogTab = 'console' | 'network' | 'execution' | 'detail-step' | 'timeline';
 
 interface LogEntry {
   id?: string;
@@ -79,6 +80,11 @@ type DetailStepLog = LogEntry & {
   detailStepKey: string;
   detailStep: DetailStepData;
 };
+
+// ── CHANGE 2: TimelineEvent type (di level module, bukan di dalam function) ──
+type TimelineEvent =
+  | { kind: 'step'; log: DetailStepLog; relativeMs: number }
+  | { kind: 'network'; log: LogEntry & { network: NonNullable<LogEntry['network']> }; meta: NetworkMeta; relativeMs: number };
 
 const DEFAULT_NETWORK_FILTERS: NetworkFilterState = {
   search: '',
@@ -203,13 +209,11 @@ const getNetworkMeta = (network: NonNullable<LogEntry['network']>): NetworkMeta 
     return { category: 'static', label: 'Static', host: parsed.host, method, pathname: parsed.pathname, isError };
   }
 
-  // ✅ FIX: POST/PUT/PATCH/DELETE = API call, apapun path-nya
   const isDataMethod = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
   if (pathname.startsWith('/api/') || isDataMethod) {
     return { category: 'business', label: 'API', host: parsed.host, method, pathname: parsed.pathname, isError };
   }
 
-  // GET ke path non-static → 'other', tapi tampilkan by default
   return { category: 'other', label: 'Other', host: parsed.host, method, pathname: parsed.pathname, isError };
 };
 
@@ -290,7 +294,7 @@ const getLifecycleIndex = (status: string) => {
 interface VideoPlayerProps {
   src: string;
   targetUrl?: string;
-  compact?: boolean; // true = inline preview, false = fullscreen modal
+  compact?: boolean;
   onClose?: () => void;
 }
 
@@ -351,11 +355,9 @@ function VideoPlayer({ src, targetUrl, compact = true, onClose }: VideoPlayerPro
 
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
 
-  // Fullscreen overlay mode
   if (isFullscreen) {
     return (
       <div className="fixed inset-0 z-[100] flex flex-col bg-black">
-        {/* Top bar */}
         <div className="flex h-14 shrink-0 items-center justify-between border-b border-white/10 bg-black/80 px-5 backdrop-blur">
           <div className="flex items-center gap-3">
             <Film className="h-4 w-4 text-indigo-300" />
@@ -378,7 +380,6 @@ function VideoPlayer({ src, targetUrl, compact = true, onClose }: VideoPlayerPro
           </Button>
         </div>
 
-        {/* Video area */}
         <div
           className="relative flex flex-1 items-center justify-center overflow-hidden bg-black"
           onMouseMove={resetControlsTimer}
@@ -395,7 +396,6 @@ function VideoPlayer({ src, targetUrl, compact = true, onClose }: VideoPlayerPro
             onEnded={() => setIsPlaying(false)}
           />
 
-          {/* Center play/pause indicator */}
           <div
             className={`pointer-events-none absolute inset-0 flex items-center justify-center transition-opacity duration-300 ${showControls || !isPlaying ? 'opacity-100' : 'opacity-0'
               }`}
@@ -409,13 +409,11 @@ function VideoPlayer({ src, targetUrl, compact = true, onClose }: VideoPlayerPro
           </div>
         </div>
 
-        {/* Controls */}
         <div
           className={`shrink-0 border-t border-white/10 bg-black/90 px-5 py-3 backdrop-blur transition-opacity duration-300 ${showControls || !isPlaying ? 'opacity-100' : 'opacity-0'
             }`}
           onMouseMove={resetControlsTimer}
         >
-          {/* Scrubber */}
           <div className="mb-3 flex items-center gap-3">
             <span className="min-w-[36px] text-right text-[10px] font-bold text-slate-400">
               {formatVideoDuration(currentTime)}
@@ -440,7 +438,6 @@ function VideoPlayer({ src, targetUrl, compact = true, onClose }: VideoPlayerPro
             </span>
           </div>
 
-          {/* Buttons */}
           <div className="flex items-center justify-center gap-3">
             <Button
               type="button" variant="ghost" size="sm"
@@ -448,7 +445,6 @@ function VideoPlayer({ src, targetUrl, compact = true, onClose }: VideoPlayerPro
               onClick={(e) => { e.stopPropagation(); skip(-10); }}
             >
               <ChevronLeft className="h-4 w-4" />
-              <span className="sr-only">-10s</span>
             </Button>
             <Button
               type="button" variant="ghost" size="sm"
@@ -463,7 +459,6 @@ function VideoPlayer({ src, targetUrl, compact = true, onClose }: VideoPlayerPro
               onClick={(e) => { e.stopPropagation(); skip(10); }}
             >
               <ChevronRight className="h-4 w-4" />
-              <span className="sr-only">+10s</span>
             </Button>
             <div className="ml-4">
               <Button
@@ -489,10 +484,8 @@ function VideoPlayer({ src, targetUrl, compact = true, onClose }: VideoPlayerPro
     );
   }
 
-  // Compact / inline mode
   return (
     <div className="mb-4 rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-      {/* Video container */}
       <div
         className="relative bg-black group cursor-pointer"
         style={{ aspectRatio: '16/9' }}
@@ -510,12 +503,10 @@ function VideoPlayer({ src, targetUrl, compact = true, onClose }: VideoPlayerPro
           onEnded={() => setIsPlaying(false)}
         />
 
-        {/* Overlay controls */}
         <div
           className={`absolute inset-0 flex flex-col justify-between bg-gradient-to-t from-black/70 via-transparent to-black/20 p-3 transition-opacity duration-200 ${showControls || !isPlaying ? 'opacity-100' : 'opacity-0'
             }`}
         >
-          {/* Top bar */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Film className="h-3.5 w-3.5 text-indigo-300" />
@@ -533,7 +524,6 @@ function VideoPlayer({ src, targetUrl, compact = true, onClose }: VideoPlayerPro
             </Button>
           </div>
 
-          {/* Center play button */}
           <div className="flex items-center justify-center">
             <div className="flex h-14 w-14 items-center justify-center rounded-full bg-black/50 backdrop-blur ring-2 ring-white/20">
               {isPlaying
@@ -543,9 +533,7 @@ function VideoPlayer({ src, targetUrl, compact = true, onClose }: VideoPlayerPro
             </div>
           </div>
 
-          {/* Bottom controls */}
           <div className="space-y-2">
-            {/* Scrubber */}
             <div className="flex items-center gap-2">
               <span className="text-[9px] font-bold text-white/60">{formatVideoDuration(currentTime)}</span>
               <div className="relative flex-1">
@@ -566,7 +554,6 @@ function VideoPlayer({ src, targetUrl, compact = true, onClose }: VideoPlayerPro
               <span className="text-[9px] font-bold text-white/60">{formatVideoDuration(duration)}</span>
             </div>
 
-            {/* Bottom buttons */}
             <div className="flex items-center gap-2">
               <Button
                 type="button" variant="ghost" size="sm"
@@ -600,7 +587,7 @@ function VideoPlayer({ src, targetUrl, compact = true, onClose }: VideoPlayerPro
   );
 }
 
-// ─── Frame Player Component (fallback when videoUrl is null) ─────────────────
+// ─── Frame Player Component ───────────────────────────────────────────────────
 interface ManualRecordingFrame {
   file: string;
   url: string;
@@ -610,7 +597,7 @@ interface ManualRecordingFrame {
 interface FramePlayerProps {
   frames: ManualRecordingFrame[];
   targetUrl?: string | null;
-  actionLogs?: LogEntry[]; // detail-step logs untuk highlight action timestamps
+  actionLogs?: LogEntry[];
   onFullscreen?: () => void;
 }
 
@@ -622,7 +609,6 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
   const playIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const totalMs = frames.length > 0 ? frames[frames.length - 1].relativeMs : 0;
-  // Interval antar frame saat playback — estimasi dari data frame atau default 200ms
   const frameIntervalMs = frames.length > 1
     ? Math.round((frames[frames.length - 1].relativeMs - frames[0].relativeMs) / (frames.length - 1))
     : 200;
@@ -641,7 +627,6 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
     return `${m}:${String(s).padStart(2, '0')}`;
   };
 
-  // Action timestamps dari detail-step logs
   const actionTimestamps = useMemo(() =>
     actionLogs
       .filter((log) => typeof log.relativeMs === 'number')
@@ -655,7 +640,6 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
 
   const progress = totalMs > 0 ? (seekMs / totalMs) * 100 : 0;
 
-  // Play/pause logic — advance seekMs by frameIntervalMs each tick
   useEffect(() => {
     if (playIntervalRef.current) clearInterval(playIntervalRef.current);
     if (!isPlaying) return;
@@ -677,14 +661,12 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
     };
   }, [isPlaying, frameIntervalMs, playbackSpeed, totalMs]);
 
-  // Stop playback jika seek manual
   const handleSeek = (val: number) => {
     setIsPlaying(false);
     setSeekMs(val);
   };
 
   const togglePlay = () => {
-    // Restart dari awal kalau sudah di akhir
     if (!isPlaying && seekMs >= totalMs) setSeekMs(0);
     setIsPlaying((p) => !p);
   };
@@ -696,7 +678,6 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-      {/* Frame display */}
       <div
         className="relative bg-black cursor-pointer"
         style={{ aspectRatio: '16/9' }}
@@ -715,7 +696,6 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
           </div>
         )}
 
-        {/* Center play/pause indicator */}
         <div className={`pointer-events-none absolute inset-0 flex items-center justify-center transition-opacity duration-200 ${isPlaying ? 'opacity-0' : 'opacity-100'}`}>
           <div className="flex h-14 w-14 items-center justify-center rounded-full bg-black/50 backdrop-blur ring-2 ring-white/20">
             {isPlaying
@@ -725,7 +705,6 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
           </div>
         </div>
 
-        {/* Top overlay */}
         <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/60 to-transparent p-3">
           <div className="flex items-center gap-2">
             <Film className="h-3.5 w-3.5 text-indigo-300" />
@@ -750,7 +729,6 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
           </div>
         </div>
 
-        {/* Bottom timestamp */}
         {targetUrl && (
           <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-transparent px-3 pb-2 pt-4">
             <p className="truncate text-[9px] text-white/40">{targetUrl}</p>
@@ -758,17 +736,13 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
         )}
       </div>
 
-      {/* Controls */}
       <div className="border-t border-slate-100 bg-slate-50 px-4 py-3 space-y-3">
-        {/* Scrubber with action markers */}
         <div className="space-y-1.5">
           <div className="relative h-5">
-            {/* Track */}
             <div className="absolute top-1/2 left-0 right-0 h-1.5 -translate-y-1/2 overflow-hidden rounded-full bg-slate-200">
               <div className="h-full rounded-full bg-indigo-500 transition-all" style={{ width: `${progress}%` }} />
             </div>
 
-            {/* Action markers */}
             {actionTimestamps.map((action, i) => {
               const pct = totalMs > 0 ? (action.relativeMs / totalMs) * 100 : 0;
               const isActive = selectedFrame && Math.abs(action.relativeMs - seekMs) < 500;
@@ -787,7 +761,6 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
               );
             })}
 
-            {/* Invisible range input on top */}
             <input
               type="range"
               min="0"
@@ -805,9 +778,7 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
           </div>
         </div>
 
-        {/* Playback controls row */}
         <div className="flex items-center gap-2">
-          {/* Play/Pause */}
           <Button
             type="button" variant="outline" size="sm"
             className="h-8 w-8 rounded-full border-slate-300 p-0 text-slate-700 hover:bg-slate-100"
@@ -816,7 +787,6 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
             {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5 translate-x-px" />}
           </Button>
 
-          {/* Skip back to first frame */}
           <Button
             type="button" variant="ghost" size="sm"
             className="h-7 w-7 p-0 text-slate-500 hover:text-slate-700"
@@ -825,7 +795,6 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
             <ChevronLeft className="h-3.5 w-3.5" />
           </Button>
 
-          {/* Skip to end */}
           <Button
             type="button" variant="ghost" size="sm"
             className="h-7 w-7 p-0 text-slate-500 hover:text-slate-700"
@@ -834,7 +803,6 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
             <ChevronRight className="h-3.5 w-3.5" />
           </Button>
 
-          {/* Playback speed */}
           <div className="ml-auto flex items-center gap-1">
             <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Speed</span>
             {[0.5, 1, 2, 4].map((s) => (
@@ -853,7 +821,6 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
           </div>
         </div>
 
-        {/* Action thumbnail strip */}
         {actionTimestamps.length > 0 && (
           <div className="space-y-1">
             <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">Actions ({actionTimestamps.length})</p>
@@ -883,7 +850,6 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
           </div>
         )}
 
-        {/* Frame thumbnail strip */}
         <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-none">
           {frames
             .filter((_, i) => i % Math.max(1, Math.floor(frames.length / 10)) === 0)
@@ -1066,6 +1032,32 @@ export function TestCaseDetailDialog({
     });
   }, [networkFilters, networkLogItems]);
   const hiddenNetworkCount = Math.max(0, networkLogItems.length - networkLogs.length);
+
+  // ── CHANGE 2: unifiedTimeline memo ──
+  const unifiedTimeline = useMemo<TimelineEvent[]>(() => {
+    const events: TimelineEvent[] = [];
+
+    for (const log of detailStepRows) {
+      events.push({ kind: 'step', log, relativeMs: log.relativeMs ?? 0 });
+    }
+
+    for (const { log, meta } of networkLogItems) {
+      const isRelevant =
+        ['POST', 'PUT', 'PATCH', 'DELETE'].includes(meta.method) ||
+        meta.isError ||
+        meta.category === 'business';
+      if (!isRelevant) continue;
+      events.push({
+        kind: 'network',
+        log: log as LogEntry & { network: NonNullable<LogEntry['network']> },
+        meta,
+        relativeMs: log.relativeMs ?? 0,
+      });
+    }
+
+    return events.sort((a, b) => a.relativeMs - b.relativeMs);
+  }, [detailStepRows, networkLogItems]);
+
   const isBugFixDetail = viewTestCase?.detailSource === 'bugfix' || Boolean(viewTestCase?.sourceTestCaseId && viewTestCase?.reportedAt);
   const lifecycleItems = useMemo(() => viewTestCase ? getBugLifecycleItems(viewTestCase) : [], [viewTestCase]);
   const lifecycleIndex = viewTestCase ? getLifecycleIndex(viewTestCase.status) : 0;
@@ -1074,7 +1066,6 @@ export function TestCaseDetailDialog({
   const captureScriptUrl = typeof window !== 'undefined' ? `${window.location.origin}/qa-capture.js` : '/qa-capture.js';
   const captureScriptTag = `<script defer src="${captureScriptUrl}"></script>`;
 
-  // Hybrid recording: prefer videoUrl, fallback to frames
   const videoSrc = manualRecording?.videoUrl ?? null;
   const hasFrames = (manualRecording?.frames?.length ?? 0) > 0;
   const hasRecording = videoSrc !== null || hasFrames;
@@ -1162,7 +1153,6 @@ export function TestCaseDetailDialog({
 
   return (
     <>
-      {/* ── Fullscreen Video Overlay ── */}
       {isVideoFullscreen && videoSrc && (
         <VideoPlayer
           src={videoSrc}
@@ -1486,7 +1476,7 @@ export function TestCaseDetailDialog({
                         </div>
                       </div>
 
-                      {/* ── RECORDING PREVIEW: Video atau Frame-based ── */}
+                      {/* Recording Preview */}
                       {hasRecording && (
                         <div className="mb-4">
                           {videoSrc ? (
@@ -1549,20 +1539,31 @@ export function TestCaseDetailDialog({
                             AI SUMMARY
                           </Button>
                           <Separator orientation="vertical" className="h-4 mx-1" />
-                          {(['execution', 'detail-step', 'console', 'network'] as const).map((tab) => (
+
+                          {/* ── CHANGE 3: tab buttons dengan timeline di depan ── */}
+                          {(['timeline', 'execution', 'detail-step', 'console', 'network'] as const).map((tab) => (
                             <Button
                               key={tab}
                               variant={activeDevLogTab === tab ? 'default' : 'ghost'}
                               size="sm"
-                              className={`h-7 px-3 text-[10px] font-bold ${activeDevLogTab === tab ? 'bg-white text-slate-800 shadow-sm hover:bg-white' : 'text-slate-500'}`}
+                              className={`h-7 px-3 text-[10px] font-bold ${activeDevLogTab === tab
+                                  ? tab === 'timeline'
+                                    ? 'bg-indigo-600 text-white shadow-sm hover:bg-indigo-600'
+                                    : 'bg-white text-slate-800 shadow-sm hover:bg-white'
+                                  : tab === 'timeline'
+                                    ? 'text-indigo-400 hover:text-indigo-300 hover:bg-indigo-950/40'
+                                    : 'text-slate-500'
+                                }`}
                               onClick={() => setActiveDevLogTab(tab)}
                             >
+                              {tab === 'timeline' && `✦ TIMELINE (${unifiedTimeline.length})`}
                               {tab === 'execution' && 'EXECUTION'}
                               {tab === 'detail-step' && `DETAILED STEPS (${detailStepRows.length})`}
                               {tab === 'console' && `CONSOLE (${consoleLogs.length})`}
                               {tab === 'network' && `NETWORK (${networkLogs.length})`}
                             </Button>
                           ))}
+
                           <Separator orientation="vertical" className="h-4 mx-1" />
                           <Button
                             variant={loadedRunLabel === 'current' || loadedRunLabel === 'live' ? 'default' : 'ghost'}
@@ -1613,6 +1614,148 @@ export function TestCaseDetailDialog({
                         )}
 
                         <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
+
+                          {/* ── CHANGE 4: TIMELINE panel ── */}
+                          {activeDevLogTab === 'timeline' && (
+                            <div className="divide-y divide-slate-800/30">
+                              {unifiedTimeline.length === 0 ? (
+                                <div className="flex flex-col items-center justify-center py-20 text-slate-600">
+                                  <Play className="w-8 h-8 mb-3 opacity-20" />
+                                  <p className="font-bold tracking-widest text-[10px] uppercase">Start Manual Capture untuk merekam timeline...</p>
+                                </div>
+                              ) : (
+                                unifiedTimeline.map((event, index) => {
+                                  const logId = `timeline-${index}`;
+                                  const isExpanded = expandedLogId === logId;
+
+                                  if (event.kind === 'step') {
+                                    const step = event.log.detailStep;
+                                    const isInput = step.action === 'input' || step.action === 'change';
+                                    return (
+                                      <div
+                                        key={logId}
+                                        className="flex items-start gap-3 px-4 py-2.5 hover:bg-white/[0.03] transition-colors"
+                                      >
+                                        {/* Timestamp */}
+                                        <span className="mt-0.5 min-w-[36px] text-right text-[10px] font-bold tabular-nums text-slate-600">
+                                          {formatRelativeTime(event.relativeMs)}
+                                        </span>
+
+                                        {/* Icon */}
+                                        <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border ${isInput
+                                            ? 'border-cyan-500/25 bg-cyan-950/50 text-cyan-400'
+                                            : 'border-rose-500/25 bg-rose-950/50 text-rose-400'
+                                          }`}>
+                                          {isInput
+                                            ? <Keyboard className="h-3 w-3" />
+                                            : <MousePointerClick className="h-3 w-3" />
+                                          }
+                                        </span>
+
+                                        {/* Content */}
+                                        <div className="min-w-0 flex-1 py-0.5">
+                                          <p className="truncate text-[11px] font-bold text-slate-200 leading-tight">
+                                            {getDetailStepTitle(event.log)}
+                                          </p>
+                                          {step.value && (
+                                            <p className="mt-0.5 truncate text-[10px] font-medium text-emerald-400">
+                                              ↳ {step.value}
+                                            </p>
+                                          )}
+                                          {(step.selector || step.url) && (
+                                            <p className="mt-0.5 truncate text-[9px] text-slate-600">
+                                              {step.selector || step.url}
+                                            </p>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  }
+
+                                  // Network event
+                                  const net = event.log.network;
+                                  const isSuccess = typeof net.status === 'number' && net.status < 400;
+                                  const reqPayload = getRequestPayload(net.data);
+                                  const resPayload = getResponsePayload(net.data);
+
+                                  return (
+                                    <div key={logId} className={`border-l-2 ${isSuccess ? 'border-l-emerald-600/40' : 'border-l-rose-600/60'}`}>
+                                      {/* Row header — clickable */}
+                                      <div
+                                        className={`flex cursor-pointer items-start gap-3 px-4 py-2.5 transition-colors ${isExpanded
+                                            ? 'bg-white/[0.05]'
+                                            : isSuccess
+                                              ? 'hover:bg-emerald-950/10'
+                                              : 'bg-rose-950/10 hover:bg-rose-950/20'
+                                          }`}
+                                        onClick={() => setExpandedLogId(isExpanded ? null : logId)}
+                                      >
+                                        {/* Timestamp */}
+                                        <span className="mt-0.5 min-w-[36px] text-right text-[10px] font-bold tabular-nums text-slate-600">
+                                          {formatRelativeTime(event.relativeMs)}
+                                        </span>
+
+                                        {/* Icon */}
+                                        <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-violet-500/25 bg-violet-950/50 text-violet-400">
+                                          <RefreshCw className="h-3 w-3" />
+                                        </span>
+
+                                        {/* Content */}
+                                        <div className="min-w-0 flex-1 py-0.5">
+                                          <div className="flex items-center gap-1.5 flex-wrap">
+                                            <span className="text-[10px] font-black tracking-wide text-indigo-400">
+                                              {event.meta.method}
+                                            </span>
+                                            <span className={`rounded px-1.5 py-px text-[9px] font-bold ${isSuccess
+                                                ? 'bg-emerald-950 text-emerald-400'
+                                                : 'bg-rose-950 text-rose-400'
+                                              }`}>
+                                              {net.status ?? '…'}
+                                            </span>
+                                            {typeof net.duration === 'number' && (
+                                              <span className="text-[9px] text-slate-600">{net.duration}ms</span>
+                                            )}
+                                          </div>
+                                          <p className="mt-0.5 truncate text-[10px] font-semibold leading-tight">
+                                            <span className="text-slate-500">{event.meta.host}</span>
+                                            <span className="text-slate-300">{event.meta.pathname}</span>
+                                          </p>
+                                        </div>
+
+                                        {/* Expand toggle */}
+                                        <ChevronDown className={`mt-1.5 h-3.5 w-3.5 shrink-0 text-slate-600 transition-transform duration-150 ${isExpanded ? 'rotate-180' : ''}`} />
+                                      </div>
+
+                                      {/* Expanded: request + response */}
+                                      {isExpanded && (
+                                        <div className="mx-4 mb-3 ml-[52px] space-y-2">
+                                          <div className="rounded-lg border border-slate-800 bg-slate-900/80 overflow-hidden">
+                                            <div className="flex items-center justify-between border-b border-slate-800 px-3 py-1.5">
+                                              <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">Request Body</span>
+                                              <span className="text-[9px] text-slate-600 font-mono truncate max-w-[200px]">{event.meta.host}{event.meta.pathname}</span>
+                                            </div>
+                                            <pre className="max-h-48 overflow-auto p-3 whitespace-pre-wrap break-all text-[10px] leading-relaxed text-cyan-300/90">
+                                              {formatPrettyValue(reqPayload)}
+                                            </pre>
+                                          </div>
+                                          <div className="rounded-lg border border-slate-800 bg-slate-900/80 overflow-hidden">
+                                            <div className="border-b border-slate-800 px-3 py-1.5">
+                                              <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">Response</span>
+                                            </div>
+                                            <pre className="max-h-48 overflow-auto p-3 whitespace-pre-wrap break-all text-[10px] leading-relaxed text-emerald-400/80">
+                                              {formatPrettyValue(resPayload)}
+                                            </pre>
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })
+                              )}
+                              <div ref={logEndRef} className="h-4" />
+                            </div>
+                          )}
+
                           {/* EXECUTION */}
                           {activeDevLogTab === 'execution' && (
                             <div className="p-5 space-y-0.5">
@@ -1924,7 +2067,7 @@ export function TestCaseDetailDialog({
                           <HelpCircle className="w-3.5 h-3.5" />
                         </div>
                         <p className="text-[11px] text-slate-600 font-medium leading-relaxed">
-                          <span className="font-bold text-indigo-600">DevTools Mode:</span> Tab Detail Step menampilkan click/input manual. Tab Console menampilkan log browser. Tab Network menampilkan XHR/Fetch traffic. Klik baris log untuk melihat detail payload dan headers.
+                          <span className="font-bold text-indigo-600">DevTools Mode:</span> Tab Timeline menampilkan steps + API calls secara kronologis. Tab Detail Step untuk edit/reorder. Tab Console untuk log browser. Tab Network untuk full traffic dengan filter.
                         </p>
                       </div>
                     </div>
