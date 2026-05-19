@@ -89,7 +89,7 @@ const DEFAULT_NETWORK_FILTERS: NetworkFilterState = {
   showStatic: false,
   showTelemetry: false,
   showDataUrls: false,
-  showOther: false,
+  showOther: true,
 };
 
 const STATIC_EXTENSIONS = [
@@ -202,9 +202,14 @@ const getNetworkMeta = (network: NonNullable<LogEntry['network']>): NetworkMeta 
   if (isStatic) {
     return { category: 'static', label: 'Static', host: parsed.host, method, pathname: parsed.pathname, isError };
   }
-  if (pathname.startsWith('/api/')) {
+
+  // ✅ FIX: POST/PUT/PATCH/DELETE = API call, apapun path-nya
+  const isDataMethod = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
+  if (pathname.startsWith('/api/') || isDataMethod) {
     return { category: 'business', label: 'API', host: parsed.host, method, pathname: parsed.pathname, isError };
   }
+
+  // GET ke path non-static → 'other', tapi tampilkan by default
   return { category: 'other', label: 'Other', host: parsed.host, method, pathname: parsed.pathname, isError };
 };
 
