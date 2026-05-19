@@ -773,8 +773,8 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
                   type="button"
                   title={`${action.label} @ ${formatMs(action.relativeMs)}`}
                   className={`absolute top-1/2 h-3.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-sm transition-all ${action.action === 'click'
-                      ? isActive ? 'bg-rose-500 scale-125' : 'bg-rose-400/80 hover:bg-rose-500'
-                      : isActive ? 'bg-emerald-500 scale-125' : 'bg-emerald-400/80 hover:bg-emerald-500'
+                    ? isActive ? 'bg-rose-500 scale-125' : 'bg-rose-400/80 hover:bg-rose-500'
+                    : isActive ? 'bg-emerald-500 scale-125' : 'bg-emerald-400/80 hover:bg-emerald-500'
                     }`}
                   style={{ left: `${pct}%` }}
                   onClick={() => skipToAction(action.relativeMs)}
@@ -838,8 +838,8 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
                 type="button"
                 onClick={() => setPlaybackSpeed(s)}
                 className={`rounded px-1.5 py-0.5 text-[9px] font-bold transition-all ${playbackSpeed === s
-                    ? 'bg-indigo-600 text-white'
-                    : 'bg-slate-200 text-slate-500 hover:bg-slate-300'
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-slate-200 text-slate-500 hover:bg-slate-300'
                   }`}
               >
                 {s}x
@@ -861,8 +861,8 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
                     type="button"
                     onClick={() => skipToAction(action.relativeMs)}
                     className={`shrink-0 flex items-center gap-1 rounded-md border px-2 py-1 text-[9px] font-bold transition-all ${isActive
-                        ? 'border-indigo-500/40 bg-indigo-950 text-indigo-200'
-                        : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-700'
+                      ? 'border-indigo-500/40 bg-indigo-950 text-indigo-200'
+                      : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-700'
                       }`}
                   >
                     {action.action === 'click'
@@ -891,8 +891,8 @@ function FramePlayer({ frames, targetUrl, actionLogs = [], onFullscreen }: Frame
                   type="button"
                   onClick={() => setSeekMs(frame.relativeMs)}
                   className={`shrink-0 rounded border text-[9px] font-bold px-1.5 py-0.5 transition-all ${isActive
-                      ? 'border-indigo-500 bg-indigo-600 text-white'
-                      : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'
+                    ? 'border-indigo-500 bg-indigo-600 text-white'
+                    : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'
                     }`}
                 >
                   {formatMs(frame.relativeMs)}
