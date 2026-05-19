@@ -1770,7 +1770,8 @@ export function TestCaseDetailDialog({
 
                 </Tabs>
               </div>{/* end p-6 pt-2 */}
-            </div>{/* end flex-1 overflow-y-auto */}
+              {/* end flex-1 overflow-y-auto */}
+            </div>
           )}
 
           <DialogFooter className="p-6 pt-4 border-t shrink-0">
