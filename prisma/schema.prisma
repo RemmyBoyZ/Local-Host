@@ -82,3 +82,16 @@ model BugFix {
   module           Module?   @relation(fields: [moduleId], references: [id], onDelete: SetNull)
   sourceTestCase   TestCase  @relation(fields: [sourceTestCaseId], references: [id], onDelete: Cascade)
 }
+
+model ExecutionLog {
+  id         String   @id @default(cuid())
+  method     String
+  url        String
+  headers    String?  // JSON string
+  body       String?
+  statusCode Int?
+  response   String?
+  duration   Int?     // milliseconds
+  createdAt  DateTime @default(now())
+  projectId  String?
+}
