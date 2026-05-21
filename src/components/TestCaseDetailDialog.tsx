@@ -1464,32 +1464,48 @@ export function TestCaseDetailDialog({
                             )}
 
                             {/* EXECUTION */}
-                            {activeDevLogTab === 'execution' && (
-                              <div className="p-5 space-y-0.5">
-                                {viewTestCase.stepLogs ? (
-                                  viewTestCase.stepLogs.split('\n').map((line, index) => {
-                                    if (!line.trim()) return null;
-                                    const isError = line.toLowerCase().includes('error') || line.toLowerCase().includes('fail');
-                                    const isWarning = line.toLowerCase().includes('warn');
-                                    const isInfo = line.toLowerCase().includes('info') || line.toLowerCase().includes('step');
-                                    return (
-                                      <div key={`${index}-${line}`} className="flex gap-4 hover:bg-white/5 px-2 py-0.5 rounded group">
-                                        <span className="text-slate-700 select-none min-w-[24px] text-right font-bold opacity-50 group-hover:opacity-100">{index + 1}</span>
-                                        <span className={isError ? 'text-rose-400 font-bold' : isWarning ? 'text-amber-400' : isInfo ? 'text-cyan-400' : 'text-emerald-400/90'}>
-                                          {line}
-                                        </span>
-                                      </div>
-                                    );
-                                  })
-                                ) : (
-                                  <div className="flex flex-col items-center justify-center py-20 text-slate-600">
-                                    <Clock className="w-8 h-8 mb-3 opacity-20" />
-                                    <p className="font-bold tracking-widest text-[10px] uppercase">Awaiting Execution Trace...</p>
-                                  </div>
-                                )}
-                                <div ref={logEndRef} className="h-8" />
-                              </div>
-                            )}
+                            {activeDevLogTab === 'execution' && (() => {
+                              // Gabungkan: stepLogs dari DB + liveLogs yang isExecution
+                              const liveExecutionLines = liveLogs
+                                .filter(log => log.isExecution)
+                                .map(log => typeof log.log === 'string' ? log.log : JSON.stringify(log.log));
+
+                              const stepLogLines = (viewTestCase.stepLogs || '')
+                                .split('\n')
+                                .filter(line => line.trim());
+
+                              // Kalau ada live logs, pakai itu. Kalau tidak, fallback ke stepLogs dari DB.
+                              const linesToRender = liveExecutionLines.length > 0
+                                ? liveExecutionLines
+                                : stepLogLines;
+
+                              return (
+                                <div className="p-5 space-y-0.5">
+                                  {linesToRender.length > 0 ? (
+                                    linesToRender.map((line, index) => {
+                                      if (!line.trim()) return null;
+                                      const isError = line.toLowerCase().includes('error') || line.toLowerCase().includes('fail');
+                                      const isWarning = line.toLowerCase().includes('warn');
+                                      const isInfo = line.toLowerCase().includes('info') || line.toLowerCase().includes('step');
+                                      return (
+                                        <div key={`${index}-${line}`} className="flex gap-4 hover:bg-white/5 px-2 py-0.5 rounded group">
+                                          <span className="text-slate-700 select-none min-w-[24px] text-right font-bold opacity-50 group-hover:opacity-100">{index + 1}</span>
+                                          <span className={isError ? 'text-rose-400 font-bold' : isWarning ? 'text-amber-400' : isInfo ? 'text-cyan-400' : 'text-emerald-400/90'}>
+                                            {line}
+                                          </span>
+                                        </div>
+                                      );
+                                    })
+                                  ) : (
+                                    <div className="flex flex-col items-center justify-center py-20 text-slate-600">
+                                      <Clock className="w-8 h-8 mb-3 opacity-20" />
+                                      <p className="font-bold tracking-widest text-[10px] uppercase">Awaiting Execution Trace...</p>
+                                    </div>
+                                  )}
+                                  <div ref={logEndRef} className="h-8" />
+                                </div>
+                              );
+                            })()}
 
                             {/* DETAIL STEPS */}
                             {activeDevLogTab === 'detail-step' && (
