@@ -30,6 +30,7 @@ interface LogEntry {
   isConsole?: boolean;
   isNetwork?: boolean;
   isDetailStep?: boolean;
+  isExecution?: boolean;
   detailStep?: {
     action?: string;
     label?: string;
@@ -1287,6 +1288,7 @@ export function TestCaseDetailDialog({
                             </div>
                           </div>
                         </div>
+                        {/* END LEFT PANEL */}
 
                         {/* RIGHT PANEL: DevTools */}
                         <div className="flex flex-1 flex-col min-w-0 bg-slate-950 rounded-2xl border border-slate-800 shadow-2xl overflow-hidden font-mono text-[11.5px]">
@@ -1465,20 +1467,11 @@ export function TestCaseDetailDialog({
 
                             {/* EXECUTION */}
                             {activeDevLogTab === 'execution' && (() => {
-                              // Gabungkan: stepLogs dari DB + liveLogs yang isExecution
                               const liveExecutionLines = liveLogs
                                 .filter(log => log.isExecution)
                                 .map(log => typeof log.log === 'string' ? log.log : JSON.stringify(log.log));
-
-                              const stepLogLines = (viewTestCase.stepLogs || '')
-                                .split('\n')
-                                .filter(line => line.trim());
-
-                              // Kalau ada live logs, pakai itu. Kalau tidak, fallback ke stepLogs dari DB.
-                              const linesToRender = liveExecutionLines.length > 0
-                                ? liveExecutionLines
-                                : stepLogLines;
-
+                              const stepLogLines = (viewTestCase.stepLogs || '').split('\n').filter(line => line.trim());
+                              const linesToRender = liveExecutionLines.length > 0 ? liveExecutionLines : stepLogLines;
                               return (
                                 <div className="p-5 space-y-0.5">
                                   {linesToRender.length > 0 ? (
@@ -1625,10 +1618,8 @@ export function TestCaseDetailDialog({
                             )}
 
                             {/* NETWORK */}
-                            {/* NETWORK — Jam.dev style */}
                             {activeDevLogTab === 'network' && (
                               <div className="flex flex-col h-full bg-white text-[12px] font-mono">
-
                                 {/* Toolbar */}
                                 <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-100 bg-slate-50 shrink-0">
                                   <div className="relative flex-1">
@@ -1668,20 +1659,13 @@ export function TestCaseDetailDialog({
                                     { key: 'preflight', label: 'Options', count: networkCategoryCounts.preflight },
                                     { key: 'telemetry', label: 'Analytics', count: networkCategoryCounts.telemetry },
                                     { key: 'other', label: 'Other', count: networkCategoryCounts.other },
-                                  ] as const).map(chip => {
-                                    const isActive = chip.key === 'all'
-                                      ? !networkFilters.showPreflight && !networkFilters.showStatic && !networkFilters.showTelemetry
-                                      : false;
-                                    return (
-                                      <button key={chip.key} type="button"
-                                        onClick={() => {
-                                          if (chip.key === 'all') setNetworkFilters(DEFAULT_NETWORK_FILTERS);
-                                        }}
-                                        className="shrink-0 px-2.5 py-1 rounded-full text-[10px] font-semibold border border-slate-200 text-slate-500 bg-white hover:border-indigo-300 hover:text-indigo-600 transition-colors">
-                                        {chip.label} <span className="opacity-60">{chip.count}</span>
-                                      </button>
-                                    );
-                                  })}
+                                  ] as const).map(chip => (
+                                    <button key={chip.key} type="button"
+                                      onClick={() => { if (chip.key === 'all') setNetworkFilters(DEFAULT_NETWORK_FILTERS); }}
+                                      className="shrink-0 px-2.5 py-1 rounded-full text-[10px] font-semibold border border-slate-200 text-slate-500 bg-white hover:border-indigo-300 hover:text-indigo-600 transition-colors">
+                                      {chip.label} <span className="opacity-60">{chip.count}</span>
+                                    </button>
+                                  ))}
                                   {hiddenNetworkCount > 0 && (
                                     <span className="ml-auto text-[10px] text-slate-400 shrink-0">{hiddenNetworkCount} hidden</span>
                                   )}
@@ -1732,33 +1716,26 @@ export function TestCaseDetailDialog({
                                         <div key={logId}>
                                           <div
                                             onClick={() => setExpandedLogId(isExp ? null : logId)}
-                                            className={`grid cursor-pointer px-3 py-2 items-center transition-colors
-                  ${isErr ? 'bg-red-50 hover:bg-red-100' : isExp ? 'bg-slate-50' : 'hover:bg-slate-50'}`}
+                                            className={`grid cursor-pointer px-3 py-2 items-center transition-colors ${isErr ? 'bg-red-50 hover:bg-red-100' : isExp ? 'bg-slate-50' : 'hover:bg-slate-50'}`}
                                             style={{ gridTemplateColumns: '52px 44px 1fr 48px 56px 80px' }}>
-                                            {/* Method */}
                                             <span className={`text-[11px] font-bold ${methodColor[meta.method] ?? 'text-slate-500'}`}>
                                               {meta.method}
                                             </span>
-                                            {/* Type badge */}
                                             <span>
                                               <span className={`inline-block px-1.5 py-px rounded text-[9px] font-semibold border ${typeColors[meta.category]}`}>
                                                 {meta.label}
                                               </span>
                                             </span>
-                                            {/* Name */}
                                             <div className="min-w-0 pr-2">
                                               <div className="truncate text-[12px] text-slate-700">{meta.pathname.split('/').pop() || meta.pathname}</div>
                                               <div className="truncate text-[10px] text-slate-400">{meta.host}</div>
                                             </div>
-                                            {/* Status */}
                                             <span className={`text-center text-[11px] font-bold ${isErr ? 'text-red-600' : 'text-emerald-600'}`}>
                                               {typeof net.network.status === 'number' ? net.network.status : '-'}
                                             </span>
-                                            {/* Time */}
                                             <span className="text-right text-[11px] text-slate-500">
                                               {typeof net.network.duration === 'number' ? `${net.network.duration}ms` : '-'}
                                             </span>
-                                            {/* Waterfall */}
                                             <div className="relative h-4">
                                               <div className="absolute top-1/2 -translate-y-1/2 h-2 rounded-sm bg-indigo-200"
                                                 style={{ left: `${barLeft}px`, width: `${barW}px` }} />
@@ -1767,7 +1744,6 @@ export function TestCaseDetailDialog({
                                             </div>
                                           </div>
 
-                                          {/* Expanded detail */}
                                           {isExp && (
                                             <div className="px-4 pb-3 pt-2 bg-slate-50 border-t border-slate-100">
                                               <div className="mb-2 font-sans text-[10px] text-slate-500 break-all font-mono bg-white border border-slate-200 rounded px-2 py-1.5">
@@ -1810,28 +1786,48 @@ export function TestCaseDetailDialog({
                                 </div>
                               </div>
                             )}
+                            {/* END NETWORK */}
 
-                          </div>{/* end RIGHT PANEL */}
-                        </div>{/* end split layout */}
+                          </div>
+                          {/* END log content area */}
 
-                        {/* Help tip */}
-                        <div className="flex items-start gap-3 rounded-xl border border-indigo-100 bg-indigo-50/50 p-3">
-                          <HelpCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-indigo-400" />
-                          <p className="text-[11px] font-medium leading-relaxed text-slate-600">
-                            <span className="font-bold text-indigo-600">Timeline</span> menampilkan steps + API secara kronologis.{' '}
-                            <span className="font-bold text-indigo-600">Network</span> untuk full traffic dengan filter.{' '}
-                            Klik baris untuk expand request/response payload.
-                          </p>
+                          {/* DevTools Footer */}
+                          <div className="flex items-center justify-between border-t border-slate-800 bg-slate-900/80 px-4 py-2 shrink-0">
+                            <div className="flex items-center gap-4 text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                              <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />{okLogCount} OK</span>
+                              <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-rose-500" />{errorLogCount} ERR</span>
+                              <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-violet-400" />{networkLogs.length} NET</span>
+                            </div>
+                            <p className="text-[9px] italic text-slate-600">Auto-scrolling enabled</p>
+                          </div>
+
                         </div>
+                        {/* END RIGHT PANEL */}
 
-                      </div>{/* end flex flex-col gap-4 */}
-                  </TabsContent>{/* end logs tab */}
+                      </div>
+                      {/* END split layout */}
+
+                      {/* Help tip */}
+                      <div className="flex items-start gap-3 rounded-xl border border-indigo-100 bg-indigo-50/50 p-3">
+                        <HelpCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-indigo-400" />
+                        <p className="text-[11px] font-medium leading-relaxed text-slate-600">
+                          <span className="font-bold text-indigo-600">Timeline</span> menampilkan steps + API secara kronologis.{' '}
+                          <span className="font-bold text-indigo-600">Network</span> untuk full traffic dengan filter.{' '}
+                          Klik baris untuk expand request/response payload.
+                        </p>
+                      </div>
+
+                    </div>
+                    {/* END flex flex-col gap-4 */}
+
+                  </TabsContent>
+                  {/* END LOGS TAB */}
 
                 </Tabs>
-              </div>{/* end p-6 pt-2 */}
-              {/* end flex-1 overflow-y-auto */}
+              </div>
+              {/* END p-6 pt-2 */}
             </div>
-          )}
+          )} {/* END flex-1 overflow-y-auto */}
 
           <DialogFooter className="p-6 pt-4 border-t shrink-0">
             <Button variant="outline" onClick={() => onOpenChange(false)} className="h-10 px-6 font-bold border-slate-200">
