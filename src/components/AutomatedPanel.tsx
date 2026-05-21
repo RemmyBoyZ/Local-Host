@@ -105,7 +105,7 @@ export function AutomatedPanel({
   getTestTypeColor,
 }: AutomatedPanelProps) {
   const filteredItems = items.filter((item) => {
-    const keyword = search.trim().toLowerCase();
+    const keyword = (search ?? '').trim().toLowerCase();
     if (!keyword) return true;
     return [
       item.testCaseId,
@@ -268,30 +268,30 @@ export function AutomatedPanel({
                         </div>
                       </TableCell>
                       <TableCell>
-  <div className="flex items-center gap-1">
-    <Button
-      variant="ghost"
-      size="sm"
-      className="h-8 w-8 rounded-md p-0 hover:bg-white"
-      onClick={() => onOpenDetail(item)}
-      title="Lihat detail"
-    >
-      <Eye className="h-4 w-4" />
-    </Button>
-    <Button
-      variant="ghost"
-      size="sm"
-      className="h-8 w-8 rounded-md p-0 hover:bg-teal-50"
-      title="Export ke Katalon (.groovy)"
-      onClick={() => window.open(
-        `/api/automation/export?testCaseId=${encodeURIComponent(item.id)}&format=groovy`,
-        '_blank'
-      )}
-    >
-      <Download className="h-4 w-4 text-teal-600" />
-    </Button>
-  </div>
-</TableCell>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 rounded-md p-0 hover:bg-white"
+                            onClick={() => onOpenDetail(item)}
+                            title="Lihat detail"
+                          >
+                            <Eye className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 rounded-md p-0 hover:bg-teal-50"
+                            title="Export ke Katalon (.groovy)"
+                            onClick={() => window.open(
+                              `/api/automation/export?testCaseId=${encodeURIComponent(item.id)}&format=groovy`,
+                              '_blank'
+                            )}
+                          >
+                            <Download className="h-4 w-4 text-teal-600" />
+                          </Button>
+                        </div>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

@@ -1625,163 +1625,206 @@ export function TestCaseDetailDialog({
                             )}
 
                             {/* NETWORK */}
+                            {/* NETWORK — Jam.dev style */}
                             {activeDevLogTab === 'network' && (
-                              <div className="h-full flex flex-col">
-                                <div className="space-y-2 border-b border-slate-800 bg-slate-950 p-3 shrink-0">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <div className="relative min-w-[180px] flex-1">
-                                      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
-                                      <Input value={networkFilters.search} onChange={(e) => updateNetworkFilters({ search: e.target.value })}
-                                        placeholder="Filter URL, host, status..."
-                                        className="h-8 border-slate-800 bg-slate-900 pl-8 text-[11px] text-slate-200 placeholder:text-slate-600" />
-                                    </div>
-                                    <select value={networkFilters.host} onChange={(e) => updateNetworkFilters({ host: e.target.value })}
-                                      className="h-8 min-w-[150px] rounded-md border border-slate-800 bg-slate-900 px-2 text-[11px] text-slate-300 outline-none">
-                                      <option value="all">All hosts ({networkLogItems.length})</option>
-                                      {networkHosts.map((h) => <option key={h} value={h}>{h}</option>)}
-                                    </select>
-                                    <select value={networkFilters.method} onChange={(e) => updateNetworkFilters({ method: e.target.value })}
-                                      className="h-8 rounded-md border border-slate-800 bg-slate-900 px-2 text-[11px] text-slate-300 outline-none">
-                                      <option value="all">All methods</option>
-                                      {networkMethods.map((m) => <option key={m} value={m}>{m}</option>)}
-                                    </select>
-                                    <select value={networkFilters.status} onChange={(e) => updateNetworkFilters({ status: e.target.value })}
-                                      className="h-8 rounded-md border border-slate-800 bg-slate-900 px-2 text-[11px] text-slate-300 outline-none">
-                                      <option value="all">All status</option>
-                                      <option value="2xx">2xx</option>
-                                      <option value="3xx">3xx</option>
-                                      <option value="4xx">4xx</option>
-                                      <option value="5xx">5xx</option>
-                                      <option value="unknown">Unknown</option>
-                                    </select>
-                                    <Button type="button" variant="ghost" size="sm"
-                                      className="h-8 gap-1 px-2 text-[10px] font-bold text-slate-400 hover:text-white"
-                                      onClick={() => setNetworkFilters(DEFAULT_NETWORK_FILTERS)}>
-                                      <Filter className="h-3 w-3" /> Reset
-                                    </Button>
+                              <div className="flex flex-col h-full bg-white text-[12px] font-mono">
+
+                                {/* Toolbar */}
+                                <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-100 bg-slate-50 shrink-0">
+                                  <div className="relative flex-1">
+                                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400 pointer-events-none" />
+                                    <input
+                                      value={networkFilters.search}
+                                      onChange={(e) => updateNetworkFilters({ search: e.target.value })}
+                                      placeholder="Filter URL, host, status..."
+                                      className="w-full pl-7 pr-3 py-1.5 text-[11px] border border-slate-200 rounded-md bg-white text-slate-700 placeholder:text-slate-400 outline-none focus:border-indigo-400"
+                                    />
                                   </div>
-                                  <div className="flex flex-wrap gap-1.5">
-                                    {([
-                                      { key: 'showPreflight' as const, label: `OPTIONS ${networkCategoryCounts.preflight}` },
-                                      { key: 'showStatic' as const, label: `Static ${networkCategoryCounts.static}` },
-                                      { key: 'showTelemetry' as const, label: `Analytics ${networkCategoryCounts.telemetry}` },
-                                      { key: 'showDataUrls' as const, label: `Data URL ${networkCategoryCounts.data}` },
-                                      { key: 'showOther' as const, label: `Other ${networkCategoryCounts.other}` },
-                                    ] as const).map((f) => (
-                                      <button key={f.key} type="button" onClick={() => toggleNetworkFilter(f.key)}
-                                        className={`rounded-full border px-2.5 py-1 text-[9px] font-bold transition-colors ${networkFilters[f.key] ? 'border-indigo-500/40 bg-indigo-950/60 text-indigo-300' : 'border-slate-800 bg-slate-900 text-slate-500 hover:text-slate-300'}`}>
-                                        {f.label}
-                                      </button>
-                                    ))}
-                                    <span className="ml-auto rounded-full border border-cyan-500/20 bg-cyan-950/40 px-2 py-1 text-[9px] font-bold text-cyan-300">
-                                      API {networkCategoryCounts.business}
-                                    </span>
-                                    {hiddenNetworkCount > 0 && (
-                                      <span className="rounded-full border border-slate-800 bg-slate-900 px-2 py-1 text-[9px] font-bold text-slate-500">
-                                        {hiddenNetworkCount} hidden
-                                      </span>
-                                    )}
-                                  </div>
+                                  <select value={networkFilters.method} onChange={(e) => updateNetworkFilters({ method: e.target.value })}
+                                    className="py-1.5 px-2 text-[11px] border border-slate-200 rounded-md bg-white text-slate-600 outline-none">
+                                    <option value="all">All methods</option>
+                                    {networkMethods.map(m => <option key={m} value={m}>{m}</option>)}
+                                  </select>
+                                  <select value={networkFilters.status} onChange={(e) => updateNetworkFilters({ status: e.target.value })}
+                                    className="py-1.5 px-2 text-[11px] border border-slate-200 rounded-md bg-white text-slate-600 outline-none">
+                                    <option value="all">All status</option>
+                                    <option value="2xx">2xx</option>
+                                    <option value="3xx">3xx</option>
+                                    <option value="4xx">4xx</option>
+                                    <option value="5xx">5xx</option>
+                                  </select>
+                                  <button onClick={() => setNetworkFilters(DEFAULT_NETWORK_FILTERS)}
+                                    className="py-1.5 px-2 text-[11px] border border-slate-200 rounded-md bg-white text-slate-500 hover:text-slate-700">
+                                    Reset
+                                  </button>
                                 </div>
 
-                                <div className="grid grid-cols-12 gap-2 border-b border-slate-800 bg-slate-900 p-2 text-[9px] font-bold uppercase tracking-wider text-slate-500 shrink-0">
-                                  <div className="col-span-1">Method</div>
-                                  <div className="col-span-1">Type</div>
-                                  <div className="col-span-6">Name</div>
-                                  <div className="col-span-2 text-center">Status</div>
-                                  <div className="col-span-2 text-right">Time</div>
-                                </div>
-
-                                <div className="flex-1 overflow-y-auto divide-y divide-slate-800/50">
-                                  {networkLogs.length === 0 ? (
-                                    <div className="flex flex-col items-center justify-center py-20 text-slate-600">
-                                      <RefreshCw className="w-8 h-8 mb-3 opacity-20" />
-                                      <p className="font-bold tracking-widest text-[10px] uppercase">Waiting for Network Traffic...</p>
-                                    </div>
-                                  ) : networkLogs.map(({ log: net, meta }, index) => {
-                                    const logId = net.id ?? `network-${index}`;
+                                {/* Chip filter row */}
+                                <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-slate-100 bg-slate-50 shrink-0 overflow-x-auto">
+                                  {([
+                                    { key: 'all', label: 'All', count: networkLogItems.length },
+                                    { key: 'business', label: 'Fetch/XHR', count: networkCategoryCounts.business },
+                                    { key: 'static', label: 'Static', count: networkCategoryCounts.static },
+                                    { key: 'preflight', label: 'Options', count: networkCategoryCounts.preflight },
+                                    { key: 'telemetry', label: 'Analytics', count: networkCategoryCounts.telemetry },
+                                    { key: 'other', label: 'Other', count: networkCategoryCounts.other },
+                                  ] as const).map(chip => {
+                                    const isActive = chip.key === 'all'
+                                      ? !networkFilters.showPreflight && !networkFilters.showStatic && !networkFilters.showTelemetry
+                                      : false;
                                     return (
-                                      <div key={logId} className="group hover:bg-white/5">
-                                        <div className="grid grid-cols-12 gap-2 p-2 cursor-pointer items-center"
-                                          onClick={() => setExpandedLogId(expandedLogId === logId ? null : logId)}>
-                                          <div className="col-span-1 text-[10px] font-black text-indigo-400 truncate">{getNetworkMethod(net.network)}</div>
-                                          <div className="col-span-1">
-                                            <span className={`rounded border px-1 py-px text-[9px] font-bold uppercase ${getNetworkCategoryClass(meta.category)}`}>
-                                              {meta.label}
-                                            </span>
-                                          </div>
-                                          <div className="col-span-6 min-w-0">
-                                            <div className="truncate text-[11px] text-slate-300">{meta.pathname.split('/').pop() || meta.pathname}</div>
-                                            <div className="truncate text-[9px] text-slate-600">{meta.host}</div>
-                                          </div>
-                                          <div className="col-span-2 text-center">
-                                            <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${getNetworkStatusClass(net.network)}`}>
-                                              {getNetworkStatus(net.network)}
-                                            </span>
-                                          </div>
-                                          <div className="col-span-2 text-right text-[10px] text-slate-500">
-                                            {getNetworkDuration(net.network)}
-                                            {typeof net.relativeMs === 'number' && (
-                                              <span className="ml-1 text-indigo-400">{formatRelativeTime(net.relativeMs)}</span>
-                                            )}
-                                          </div>
-                                        </div>
-                                        {expandedLogId === logId && (
-                                          <div className="border-t border-slate-800 bg-slate-900/50 p-4">
-                                            <div className="mb-3 rounded border border-slate-800 bg-slate-950/70 p-3">
-                                              <p className="mb-1 text-[9px] font-bold uppercase text-slate-500">Full URL</p>
-                                              <pre className="whitespace-pre-wrap break-all text-[10px] text-slate-300">{formatNetworkUrlForDisplay(net.network.url)}</pre>
-                                            </div>
-                                            <div className="grid gap-3 xl:grid-cols-3">
-                                              <div>
-                                                <p className="mb-1 text-[9px] font-bold uppercase text-slate-500">Headers</p>
-                                                <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-slate-800 bg-slate-900 p-2 text-[10px] text-slate-400">{formatPrettyValue(net.network.headers)}</pre>
-                                              </div>
-                                              <div>
-                                                <p className="mb-1 text-[9px] font-bold uppercase text-slate-500">Request</p>
-                                                <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-slate-800 bg-slate-900 p-2 text-[10px] text-cyan-300/90">{formatPrettyValue(getRequestPayload(net.network.data))}</pre>
-                                              </div>
-                                              <div>
-                                                <p className="mb-1 text-[9px] font-bold uppercase text-slate-500">Response</p>
-                                                <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-slate-800 bg-slate-900 p-2 text-[10px] text-emerald-500/80">{formatPrettyValue(getResponsePayload(net.network.data))}</pre>
-                                              </div>
-                                            </div>
-                                          </div>
-                                        )}
-                                      </div>
+                                      <button key={chip.key} type="button"
+                                        onClick={() => {
+                                          if (chip.key === 'all') setNetworkFilters(DEFAULT_NETWORK_FILTERS);
+                                        }}
+                                        className="shrink-0 px-2.5 py-1 rounded-full text-[10px] font-semibold border border-slate-200 text-slate-500 bg-white hover:border-indigo-300 hover:text-indigo-600 transition-colors">
+                                        {chip.label} <span className="opacity-60">{chip.count}</span>
+                                      </button>
                                     );
                                   })}
-                                  <div ref={logEndRef} className="h-4" />
+                                  {hiddenNetworkCount > 0 && (
+                                    <span className="ml-auto text-[10px] text-slate-400 shrink-0">{hiddenNetworkCount} hidden</span>
+                                  )}
+                                </div>
+
+                                {/* Column headers */}
+                                <div className="grid border-b border-slate-100 bg-slate-50 px-3 py-1.5 shrink-0 text-[10px] font-semibold text-slate-400 uppercase tracking-wide"
+                                  style={{ gridTemplateColumns: '52px 44px 1fr 48px 56px 80px' }}>
+                                  <span>Method</span>
+                                  <span>Type</span>
+                                  <span>Name</span>
+                                  <span className="text-center">Status</span>
+                                  <span className="text-right">Time</span>
+                                  <span className="text-right">Waterfall</span>
+                                </div>
+
+                                {/* Rows */}
+                                <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
+                                  {networkLogs.length === 0 ? (
+                                    <div className="flex flex-col items-center justify-center py-16 text-slate-300">
+                                      <RefreshCw className="w-7 h-7 mb-2" />
+                                      <p className="text-[11px] font-semibold uppercase tracking-wider">Waiting for network traffic...</p>
+                                    </div>
+                                  ) : (() => {
+                                    const maxDur = Math.max(...networkLogs.map(({ log }) => log.network.duration ?? 0), 1);
+                                    return networkLogs.map(({ log: net, meta }, index) => {
+                                      const logId = net.id ?? `network-${index}`;
+                                      const isErr = typeof net.network.status === 'number' && net.network.status >= 400;
+                                      const isExp = expandedLogId === logId;
+                                      const dur = net.network.duration ?? 0;
+                                      const barW = Math.max(4, Math.round((dur / maxDur) * 72));
+                                      const barLeft = Math.round((1 - dur / maxDur) * 20);
+
+                                      const methodColor: Record<string, string> = {
+                                        GET: 'text-blue-600', POST: 'text-emerald-600',
+                                        PUT: 'text-amber-600', DELETE: 'text-red-600', PATCH: 'text-violet-600',
+                                      };
+                                      const typeColors: Record<string, string> = {
+                                        business: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+                                        preflight: 'bg-amber-50 text-amber-700 border-amber-200',
+                                        static: 'bg-slate-100 text-slate-500 border-slate-200',
+                                        telemetry: 'bg-violet-50 text-violet-700 border-violet-200',
+                                        data: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200',
+                                        other: 'bg-slate-50 text-slate-500 border-slate-200',
+                                      };
+
+                                      return (
+                                        <div key={logId}>
+                                          <div
+                                            onClick={() => setExpandedLogId(isExp ? null : logId)}
+                                            className={`grid cursor-pointer px-3 py-2 items-center transition-colors
+                  ${isErr ? 'bg-red-50 hover:bg-red-100' : isExp ? 'bg-slate-50' : 'hover:bg-slate-50'}`}
+                                            style={{ gridTemplateColumns: '52px 44px 1fr 48px 56px 80px' }}>
+                                            {/* Method */}
+                                            <span className={`text-[11px] font-bold ${methodColor[meta.method] ?? 'text-slate-500'}`}>
+                                              {meta.method}
+                                            </span>
+                                            {/* Type badge */}
+                                            <span>
+                                              <span className={`inline-block px-1.5 py-px rounded text-[9px] font-semibold border ${typeColors[meta.category]}`}>
+                                                {meta.label}
+                                              </span>
+                                            </span>
+                                            {/* Name */}
+                                            <div className="min-w-0 pr-2">
+                                              <div className="truncate text-[12px] text-slate-700">{meta.pathname.split('/').pop() || meta.pathname}</div>
+                                              <div className="truncate text-[10px] text-slate-400">{meta.host}</div>
+                                            </div>
+                                            {/* Status */}
+                                            <span className={`text-center text-[11px] font-bold ${isErr ? 'text-red-600' : 'text-emerald-600'}`}>
+                                              {typeof net.network.status === 'number' ? net.network.status : '-'}
+                                            </span>
+                                            {/* Time */}
+                                            <span className="text-right text-[11px] text-slate-500">
+                                              {typeof net.network.duration === 'number' ? `${net.network.duration}ms` : '-'}
+                                            </span>
+                                            {/* Waterfall */}
+                                            <div className="relative h-4">
+                                              <div className="absolute top-1/2 -translate-y-1/2 h-2 rounded-sm bg-indigo-200"
+                                                style={{ left: `${barLeft}px`, width: `${barW}px` }} />
+                                              <div className="absolute top-1/2 -translate-y-1/2 h-2 rounded-sm bg-indigo-500"
+                                                style={{ left: `${barLeft + Math.round(barW * 0.3)}px`, width: `${Math.round(barW * 0.7)}px` }} />
+                                            </div>
+                                          </div>
+
+                                          {/* Expanded detail */}
+                                          {isExp && (
+                                            <div className="px-4 pb-3 pt-2 bg-slate-50 border-t border-slate-100">
+                                              <div className="mb-2 font-sans text-[10px] text-slate-500 break-all font-mono bg-white border border-slate-200 rounded px-2 py-1.5">
+                                                {net.network.url}
+                                              </div>
+                                              <div className="grid gap-3" style={{ gridTemplateColumns: '1fr 1fr 1fr' }}>
+                                                <div>
+                                                  <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400 mb-1">Headers</p>
+                                                  <pre className="text-[10px] bg-white border border-slate-200 rounded p-2 max-h-40 overflow-auto whitespace-pre-wrap break-all text-slate-600">
+                                                    {formatPrettyValue(net.network.headers)}
+                                                  </pre>
+                                                </div>
+                                                <div>
+                                                  <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400 mb-1">Request</p>
+                                                  <pre className="text-[10px] bg-blue-50 border border-blue-100 rounded p-2 max-h-40 overflow-auto whitespace-pre-wrap break-all text-blue-800">
+                                                    {formatPrettyValue(getRequestPayload(net.network.data))}
+                                                  </pre>
+                                                </div>
+                                                <div>
+                                                  <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400 mb-1">Response</p>
+                                                  <pre className="text-[10px] bg-emerald-50 border border-emerald-100 rounded p-2 max-h-40 overflow-auto whitespace-pre-wrap break-all text-emerald-800">
+                                                    {formatPrettyValue(getResponsePayload(net.network.data))}
+                                                  </pre>
+                                                </div>
+                                              </div>
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    });
+                                  })()}
+                                  <div ref={logEndRef} className="h-3" />
+                                </div>
+
+                                {/* Footer */}
+                                <div className="flex items-center gap-4 px-3 py-1.5 border-t border-slate-100 bg-slate-50 shrink-0 text-[10px] text-slate-400">
+                                  <span><b className="text-slate-600 font-semibold">{networkLogs.length}</b> requests</span>
+                                  <span><b className="text-red-500 font-semibold">{networkLogs.filter(({ log }) => (log.network.status ?? 0) >= 400).length}</b> errors</span>
+                                  <span className="ml-auto">{hiddenNetworkCount > 0 ? `${hiddenNetworkCount} filtered` : ''}</span>
                                 </div>
                               </div>
                             )}
 
-                          </div>{/* end log content area */}
+                          </div>{/* end RIGHT PANEL */}
+                        </div>{/* end split layout */}
 
-                          {/* DevTools Footer */}
-                          <div className="flex items-center justify-between border-t border-slate-800 bg-slate-900/80 px-4 py-2 shrink-0">
-                            <div className="flex items-center gap-4 text-[9px] font-bold uppercase tracking-wider text-slate-500">
-                              <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />{okLogCount} OK</span>
-                              <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-rose-500" />{errorLogCount} ERR</span>
-                              <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-violet-400" />{networkLogs.length} NET</span>
-                            </div>
-                            <p className="text-[9px] italic text-slate-600">Auto-scrolling enabled</p>
-                          </div>
+                        {/* Help tip */}
+                        <div className="flex items-start gap-3 rounded-xl border border-indigo-100 bg-indigo-50/50 p-3">
+                          <HelpCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-indigo-400" />
+                          <p className="text-[11px] font-medium leading-relaxed text-slate-600">
+                            <span className="font-bold text-indigo-600">Timeline</span> menampilkan steps + API secara kronologis.{' '}
+                            <span className="font-bold text-indigo-600">Network</span> untuk full traffic dengan filter.{' '}
+                            Klik baris untuk expand request/response payload.
+                          </p>
+                        </div>
 
-                        </div>{/* end RIGHT PANEL */}
-                      </div>{/* end split layout */}
-
-                      {/* Help tip */}
-                      <div className="flex items-start gap-3 rounded-xl border border-indigo-100 bg-indigo-50/50 p-3">
-                        <HelpCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-indigo-400" />
-                        <p className="text-[11px] font-medium leading-relaxed text-slate-600">
-                          <span className="font-bold text-indigo-600">Timeline</span> menampilkan steps + API secara kronologis.{' '}
-                          <span className="font-bold text-indigo-600">Network</span> untuk full traffic dengan filter.{' '}
-                          Klik baris untuk expand request/response payload.
-                        </p>
-                      </div>
-
-                    </div>{/* end flex flex-col gap-4 */}
+                      </div>{/* end flex flex-col gap-4 */}
                   </TabsContent>{/* end logs tab */}
 
                 </Tabs>
